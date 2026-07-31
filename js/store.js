@@ -525,6 +525,23 @@ const Store = {
     }, 2000);
   },
 
+  // 页面关闭/切后台时立即同步所有表
+  _syncAllTablesNow() {
+    if (!this._cloudReady()) return;
+    // 用 sendBeacon 或同步方式推送
+    const pending = Object.keys(this._pushTimers || {});
+    for (const dbName of pending) {
+      clearTimeout(this._pushTimers[dbName]);
+      this._syncPushTable(dbName);
+    }
+    // 也尝试推送其他有未保存数据的表
+    for (const dbName of Object.keys(this.schemas)) {
+      if (!pending.includes(dbName)) {
+        this._syncPushTable(dbName);
+      }
+    }
+  },
+
   // 全量推送（首次初始化后调用）
   async _pushAll() {
     if (!this._cloudReady()) return;
@@ -890,10 +907,11 @@ const Store = {
     ];
     concertSeed.forEach(c => seedAdd(c));
 
-    // 如果已初始化过则跳过其余预设
-    // 记录是否首次初始化（用于后续云端同步判断）
+    // 判断是否首次初始化
     const isFirstInit = !localStorage.getItem(this.prefix + '_initialized');
-    if (!isFirstInit) return;
+
+    // 首次初始化：填充种子数据
+    if (isFirstInit) {
 
     const today = this.todayStr();
 
@@ -1049,18 +1067,17 @@ const Store = {
 
     localStorage.setItem(this.prefix + '_initialized', '1');
 
-    // 云端同步：先从云端拉取（覆盖本地种子数据），再推送到云端
-    if (this._cloudReady() && isFirstInit) {
+    } // end if (isFirstInit) — 种子数据仅首次填充
+
+    // 云端同步：每次打开都从云端拉取最新数据
+    if (this._cloudReady()) {
       setTimeout(async () => {
         const pulled = await this._syncPullAll();
-        if (!pulled) {
-          // 云端无数据，把本地种子数据推上去
+        if (!pulled && isFirstInit) {
+          // 首次且云端无数据，把种子数据推上去
           await this._pushAll();
         }
-      }, 500);
-    } else if (this._cloudReady()) {
-      // 非首次：延迟拉取云端最新数据
-      setTimeout(() => this._syncPullAll(), 1000);
+      }, isFirstInit ? 500 : 100);
     }
   },
 

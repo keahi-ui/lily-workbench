@@ -50,6 +50,12 @@ const App = {
     // 初始化数据
     Store.init();
 
+    // 页面关闭/切后台时强制推送数据到云端
+    window.addEventListener('beforeunload', () => Store._syncAllTablesNow());
+    window.addEventListener('visibilitychange', () => {
+      if (document.hidden) Store._syncAllTablesNow();
+    });
+
     // 注册 Service Worker
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('./sw.js').catch(err => {
