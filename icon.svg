@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#a8e6cf"/>
+      <stop offset="100%" stop-color="#7bc99e"/>
+    </linearGradient>
+    <pattern id="dots" x="0" y="0" width="48" height="48" patternUnits="userSpaceOnUse">
+      <circle cx="12" cy="12" r="5" fill="#ffffff" opacity="0.25"/>
+      <circle cx="36" cy="36" r="3.5" fill="#ffffff" opacity="0.15"/>
+    </pattern>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <rect width="512" height="512" rx="112" fill="url(#dots)"/>
+  <text x="256" y="345" font-size="220" text-anchor="middle" font-family="Arial, sans-serif">🌟</text>
+</svg>

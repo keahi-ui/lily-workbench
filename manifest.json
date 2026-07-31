@@ -1,0 +1,19 @@
+{
+  "name": "lilyの工作台",
+  "short_name": "lily工作台",
+  "description": "个人工作台 - 仪表盘、英语学习、记账、追星等一站式管理",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#7bc99e",
+  "background_color": "#f8fdf9",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
