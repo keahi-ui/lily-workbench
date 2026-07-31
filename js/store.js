@@ -425,6 +425,119 @@ const Store = {
 
   _save(dbName, data) {
     localStorage.setItem(this.prefix + dbName, JSON.stringify(data));
+    this._schedulePush(dbName);
+  },
+
+  // ---------- Supabase 云同步 ----------
+  _cloudReady() {
+    return typeof supabaseClient !== 'undefined' && supabaseClient !== null;
+  },
+
+  // 从云端拉取数据并合并到本地（云端最新版本优先）
+  async _syncPullAll() {
+    if (!this._cloudReady()) return false;
+    try {
+      const { data: rows, error } = await supabaseClient
+        .from('records')
+        .select('*')
+        .order('updated_at', { ascending: false });
+      if (error || !rows) return false;
+      if (rows.length === 0) return false;
+
+      // 按表名分组
+      const grouped = {};
+      for (const r of rows) {
+        if (!grouped[r.table_name]) grouped[r.table_name] = [];
+        grouped[r.table_name].push(r.data);
+      }
+
+      // 逐表合并
+      for (const dbName of Object.keys(grouped)) {
+        if (!this.schemas[dbName]) continue; // 跳过未知表
+        const localMap = {};
+        for (const r of this.getAll(dbName)) localMap[r.id] = r;
+        for (const r of grouped[dbName]) {
+          if (!localMap[r.id] || new Date(r.updatedAt) > new Date(localMap[r.id].updatedAt)) {
+            localMap[r.id] = r;
+          }
+        }
+        localStorage.setItem(this.prefix + dbName, JSON.stringify(Object.values(localMap)));
+      }
+
+      // 同步设置项
+      const { data: settings, error: sErr } = await supabaseClient
+        .from('settings')
+        .select('*');
+      if (!sErr && settings) {
+        for (const s of settings) {
+          localStorage.setItem(s.key, JSON.stringify(s.value));
+        }
+      }
+
+      return true;
+    } catch (e) {
+      console.log('Cloud pull skipped:', e.message);
+      return false;
+    }
+  },
+
+  // 推送一张表到云端
+  async _syncPushTable(dbName) {
+    if (!this._cloudReady()) return;
+    try {
+      const data = this.getAll(dbName);
+      // 先清空再全量插入（��简单可靠）
+      await supabaseClient.from('records').delete().eq('table_name', dbName);
+      if (data.length > 0) {
+        const rows = data.map(r => ({
+          table_name: dbName,
+          record_id: r.id,
+          data: r,
+          updated_at: r.updatedAt || new Date().toISOString()
+        }));
+        for (let i = 0; i < rows.length; i += 500) {
+          await supabaseClient.from('records').insert(rows.slice(i, i + 500));
+        }
+      }
+    } catch (e) {
+      console.log('Cloud push failed:', e.message);
+    }
+  },
+
+  // 推送设置到云端
+  async _syncPushSetting(key, value) {
+    if (!this._cloudReady()) return;
+    try {
+      await supabaseClient.from('settings').upsert({
+        key: key,
+        value: value,
+        updated_at: new Date().toISOString()
+      });
+    } catch (e) {}
+  },
+
+  // 防抖推送：写操作后 2 秒自动同步
+  _schedulePush(dbName) {
+    if (!this._pushTimers) this._pushTimers = {};
+    clearTimeout(this._pushTimers[dbName]);
+    this._pushTimers[dbName] = setTimeout(() => {
+      this._syncPushTable(dbName);
+    }, 2000);
+  },
+
+  // 全量推送（首次初始化后调用）
+  async _pushAll() {
+    if (!this._cloudReady()) return;
+    for (const dbName of Object.keys(this.schemas)) {
+      await this._syncPushTable(dbName);
+    }
+    // 同步自定义设置
+    const cats = localStorage.getItem(this._exerciseCustomKey);
+    if (cats) await this._syncPushSetting(this._exerciseCustomKey, JSON.parse(cats));
+    const artists = localStorage.getItem(this._starArtistsKey);
+    if (artists) await this._syncPushSetting(this._starArtistsKey, JSON.parse(artists));
+    const pwd = localStorage.getItem('wb_password_hash');
+    if (pwd) await this._syncPushSetting('wb_password_hash', pwd);
   },
 
   // ---------- 工具方法 ----------
@@ -448,7 +561,9 @@ const Store = {
     return v !== null ? parseInt(v) : defaultVal;
   },
   setPeriodSetting(key, value) {
-    localStorage.setItem(this.prefix + 'period_' + key, value);
+    const fullKey = this.prefix + 'period_' + key;
+    localStorage.setItem(fullKey, value);
+    this._syncPushSetting(fullKey, value);
   },
 
   // 获取所有"来了"日期（按时间正序）
@@ -581,6 +696,7 @@ const Store = {
 
   _saveCustomExerciseCats(cats) {
     localStorage.setItem(this._exerciseCustomKey, JSON.stringify(cats));
+    this._syncPushSetting(this._exerciseCustomKey, cats);
   },
 
   // 获取所有自定义运动类别
@@ -624,6 +740,7 @@ const Store = {
 
   _saveStarArtists(artists) {
     localStorage.setItem(this._starArtistsKey, JSON.stringify(artists));
+    this._syncPushSetting(this._starArtistsKey, artists);
   },
 
   // 获取预设 + 自定义的所有艺人列表
@@ -774,7 +891,9 @@ const Store = {
     concertSeed.forEach(c => seedAdd(c));
 
     // 如果已初始化过则跳过其余预设
-    if (localStorage.getItem(this.prefix + '_initialized')) return;
+    // 记录是否首次初始化（用于后续云端同步判断）
+    const isFirstInit = !localStorage.getItem(this.prefix + '_initialized');
+    if (!isFirstInit) return;
 
     const today = this.todayStr();
 
@@ -929,6 +1048,20 @@ const Store = {
     this.add('handcraft', { title: '常用布料种类与用途', type: '缝纫', status: '已完成', link: '', for_who: '', notes: '纯棉（衬衫/裙）、亚麻（夏季）、雪纺（飘逸裙）、灯芯绒（秋冬）、牛仔布', is_reference: true });
 
     localStorage.setItem(this.prefix + '_initialized', '1');
+
+    // 云端同步：先从云端拉取（覆盖本地种子数据），再推送到云端
+    if (this._cloudReady() && isFirstInit) {
+      setTimeout(async () => {
+        const pulled = await this._syncPullAll();
+        if (!pulled) {
+          // 云端无数据，把本地种子数据推上去
+          await this._pushAll();
+        }
+      }, 500);
+    } else if (this._cloudReady()) {
+      // 非首次：延迟拉取云端最新数据
+      setTimeout(() => this._syncPullAll(), 1000);
+    }
   },
 
   // ---------- 语录种子数据 ----------

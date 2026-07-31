@@ -1,10 +1,11 @@
-const CACHE_NAME = 'lily-workbench-v25';
+const CACHE_NAME = 'lily-workbench-v26';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
   './icon.svg',
   './css/style.css',
+  './js/supabase.js',
   './js/store.js',
   './js/ui.js',
   './js/pages.js',
@@ -31,6 +32,12 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+
+  // Supabase SDK 始终从网络获取（不缓存 CDN 资源）
+  if (event.request.url.includes('supabase') || event.request.url.includes('jsdelivr')) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
 
   // HTML 页面：网络优先，确保总是拿到最新版本
   const isHTML = event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html');
