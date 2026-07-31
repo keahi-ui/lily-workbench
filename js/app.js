@@ -4,8 +4,20 @@
    ============================================ */
 
 const App = {
-  // 密码 SHA-256 哈希（默认: lily2024）
-  PASSWORD_HASH: 'c3c762d8dfb89368c64898c723d338059806dc98d1538b0a9c1d812c2aa0575e',
+  // 默认密码哈希（lily2024）
+  DEFAULT_PASSWORD_HASH: 'c3c762d8dfb89368c64898c723d338059806dc98d1538b0a9c1d812c2aa0575e',
+  // 获取当前有效密码哈希（优先读取用户修改过的）
+  _passwordHash: null,
+  get PASSWORD_HASH() {
+    if (this._passwordHash) return this._passwordHash;
+    const saved = localStorage.getItem('wb_password_hash');
+    if (saved) { this._passwordHash = saved; return saved; }
+    return this.DEFAULT_PASSWORD_HASH;
+  },
+  set PASSWORD_HASH(val) {
+    this._passwordHash = val;
+    localStorage.setItem('wb_password_hash', val);
+  },
 
   currentRoute: 'dashboard',
   expandedNav: new Set(),

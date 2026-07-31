@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lily-workbench-v23';
+const CACHE_NAME = 'lily-workbench-v24';
 const ASSETS = [
   './',
   './index.html',
@@ -31,6 +31,22 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
+
+  // HTML 页面：网络优先，确保总是拿到最新版本
+  const isHTML = event.request.headers.get('accept') && event.request.headers.get('accept').includes('text/html');
+
+  if (isHTML) {
+    event.respondWith(
+      fetch(event.request).then(response => {
+        const clone = response.clone();
+        caches.open(CACHE_NAME).then(cache => cache.put(event.request, clone));
+        return response;
+      }).catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // JS/CSS 等静态资源：缓存优先
   event.respondWith(
     caches.match(event.request).then((cached) => {
       return cached || fetch(event.request).then((response) => {
