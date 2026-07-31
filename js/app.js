@@ -31,6 +31,16 @@ const App = {
 
   // ---------- 初始化 ----------
   init() {
+    // ?reset 参数：清除自定义密码，恢复默认 lily2024
+    if (location.search.includes('reset')) {
+      localStorage.removeItem('wb_password_hash');
+      this._passwordHash = null;
+      sessionStorage.removeItem('wb_authenticated');
+      // 去掉 ?reset 参数后重新加载
+      const cleanUrl = location.pathname + location.search.replace(/[?&]reset(=[^&]*)?/g, '').replace(/^\?&/, '?');
+      history.replaceState(null, '', cleanUrl || location.pathname);
+    }
+
     // 登录门禁：未认证不加载内容
     if (!this.checkAuth()) {
       this.showLogin();
@@ -220,6 +230,17 @@ const App = {
 
     // 自动聚焦
     setTimeout(() => document.getElementById('login-pwd').focus(), 200);
+
+    // 重置密码链接
+    document.getElementById('login-reset').onclick = () => {
+      if (confirm('确定重置为默认密码 "lily2024" 吗？')) {
+        localStorage.removeItem('wb_password_hash');
+        this._passwordHash = null;
+        document.getElementById('login-error').textContent = '已重置，请输入 lily2024';
+        document.getElementById('login-pwd').value = '';
+        document.getElementById('login-pwd').focus();
+      }
+    };
   },
 
   logout() {

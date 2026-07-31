@@ -1569,6 +1569,12 @@ a:hover { text-decoration: underline; }
   font-size: 13px; color: #f4845f;
   min-height: 20px;
 }
+.login-reset {
+  display: block; margin-top: 14px;
+  font-size: 13px; color: var(--text-muted);
+  text-decoration: underline; cursor: pointer;
+}
+.login-reset:hover { color: var(--info); }
 
 /* 设置页修改密码 */
 .settings-pwd-row {
