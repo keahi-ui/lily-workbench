@@ -433,6 +433,34 @@ const Store = {
     return typeof supabaseClient !== 'undefined' && supabaseClient !== null;
   },
 
+  // 判断一张表是否以 date 作为天然唯一键（每天最多一条记录）
+  _isDateKeyed(dbName) {
+    const schema = this.schemas[dbName];
+    if (!schema) return false;
+    const titleField = schema.fields.find(f => f.name === schema.titleField);
+    return titleField && titleField.name === 'date' && (titleField.inputType === 'date' || titleField.type === 'title');
+  },
+
+  // 判断一条 date-keyed 记录是否有用户实际填写的数据（非空白种子）
+  _hasUserData(dbName, record) {
+    if (!record) return false;
+    const schema = this.schemas[dbName];
+    if (!schema) return true; // 未知表，保守认为有数据
+
+    for (const field of schema.fields) {
+      if (field.name === 'date' || field.name === 'id' || field.name === 'createdAt' || field.name === 'updatedAt') continue;
+      const val = record[field.name];
+      if (field.type === 'checkbox') {
+        if (val === true) return true;
+      } else if (field.type === 'number') {
+        if (val !== null && val !== undefined && val !== 0 && val !== '') return true;
+      } else {
+        if (val && val !== '' && val !== '无') return true;
+      }
+    }
+    return false;
+  },
+
   // 从云端拉取数据并合并到本地（云端最新版本优先）
   async _syncPullAll() {
     if (!this._cloudReady()) return false;
@@ -454,11 +482,37 @@ const Store = {
       // 逐表合并
       for (const dbName of Object.keys(grouped)) {
         if (!this.schemas[dbName]) continue; // 跳过未知表
+        const dateKeyed = this._isDateKeyed(dbName);
         const localMap = {};
-        for (const r of this.getAll(dbName)) localMap[r.id] = r;
-        for (const r of grouped[dbName]) {
-          if (!localMap[r.id] || new Date(r.updatedAt) > new Date(localMap[r.id].updatedAt)) {
-            localMap[r.id] = r;
+
+        if (dateKeyed) {
+          // date 为键的表：按 date 字段去重合并
+          // 规则：优先保留「有用户数据」的记录，其次 updatedAt 最新的
+          const allRecords = [...this.getAll(dbName), ...grouped[dbName]];
+          for (const r of allRecords) {
+            if (!r.date) continue;
+            const existing = localMap[r.date];
+            if (!existing) {
+              localMap[r.date] = r;
+            } else {
+              const rHasData = this._hasUserData(dbName, r);
+              const existingHasData = this._hasUserData(dbName, existing);
+              if (rHasData && !existingHasData) {
+                localMap[r.date] = r; // 有数据的覆盖空的
+              } else if (!rHasData && existingHasData) {
+                // 保持 existing（已有数据）
+              } else if (new Date(r.updatedAt) > new Date(existing.updatedAt)) {
+                localMap[r.date] = r; // 都有/都无数据时，取较新的
+              }
+            }
+          }
+        } else {
+          // 普通表：按 id 合并
+          for (const r of this.getAll(dbName)) localMap[r.id] = r;
+          for (const r of grouped[dbName]) {
+            if (!localMap[r.id] || new Date(r.updatedAt) > new Date(localMap[r.id].updatedAt)) {
+              localMap[r.id] = r;
+            }
           }
         }
         localStorage.setItem(this.prefix + dbName, JSON.stringify(Object.values(localMap)));
@@ -485,8 +539,21 @@ const Store = {
   async _syncPushTable(dbName) {
     if (!this._cloudReady()) return;
     try {
-      const data = this.getAll(dbName);
-      // 先清空再全量插入（��简单可靠）
+      let data = this.getAll(dbName);
+
+      // date 为键的表：按 date 去重，只保留 updatedAt 最新的那条
+      if (this._isDateKeyed(dbName)) {
+        const deduped = {};
+        for (const r of data) {
+          if (!r.date) continue;
+          if (!deduped[r.date] || new Date(r.updatedAt) > new Date(deduped[r.date].updatedAt)) {
+            deduped[r.date] = r;
+          }
+        }
+        data = Object.values(deduped);
+      }
+
+      // 先清空再全量插入
       await supabaseClient.from('records').delete().eq('table_name', dbName);
       if (data.length > 0) {
         const rows = data.map(r => ({
@@ -953,22 +1020,9 @@ const Store = {
       related_inspiration: '',
     });
 
-    // 每日打卡 - 今天的记录
-    const todayRecord = {
-      date: today,
-      hearing_done: false, hearing_note: '',
-      reading_done: false, reading_note: '',
-      speaking_done: false, speaking_note: '',
-      exercise_done: false,
-      morning_meds: false, afternoon_meds: false,
-      water_1: false, water_2: false, water_3: false, water_4: false,
-      water_5: false, water_6: false, water_7: false, water_8: false,
-      xiaomi_signin: false, netease_signin: false,
-      browser_signin: false, wallet_signin: false,
-      skincare_morning: false, skincare_evening: false, blackhead_done: false,
-      praise: '', mood: '', notes: '',
-    };
-    this.add('daily_checkin', todayRecord);
+    // 每日打卡 - 今天的记录由仪表盘按需创建（避免与云端数据产生重复）
+    // 不在此处预建种子记录，否则跨设备同步时会因 updatedAt 时间戳
+    // 冲突导致云端已勾选数据被空白种子覆盖
 
     // 示例运动视频
     const sampleVideos = [
@@ -1077,8 +1131,47 @@ const Store = {
           // 首次且云端无数据，把种子数据推上去
           await this._pushAll();
         }
+        // 同步完成后刷新界面，确保仪表盘显示的是云端合并结果
+        // （防止渲染时用空白记录，之后才等到云端数据）
+        if (typeof App !== 'undefined' && typeof App.rerender === 'function') {
+          App.rerender();
+        }
       }, isFirstInit ? 500 : 100);
     }
+
+    // 清理本地可能已存在的同日重复记录（修复旧版本跨设备同步 bug 遗留）
+    this._dedupeDateKeyedTables();
+  },
+
+  // 清理以 date 为键的表中，同一天存在的重复记录
+  _dedupeDateKeyedTables() {
+    const dateKeyedTables = Object.keys(this.schemas).filter(db => this._isDateKeyed(db));
+    let changed = false;
+    for (const dbName of dateKeyedTables) {
+      const all = this.getAll(dbName);
+      const byDate = {};
+      let dup = 0;
+      for (const r of all) {
+        if (!r.date) { byDate[r.id || ('_' + Math.random())] = r; continue; }
+        if (byDate[r.date]) {
+          dup++;
+          // 保留有用户数据的；都无数据时保留 updatedAt 最新的
+          const cur = byDate[r.date];
+          const curHas = this._hasUserData(dbName, cur);
+          const rHas = this._hasUserData(dbName, r);
+          if (rHas && !curHas) byDate[r.date] = r;
+          else if (!rHas && curHas) { /* keep cur */ }
+          else if (new Date(r.updatedAt) > new Date(cur.updatedAt)) byDate[r.date] = r;
+        } else {
+          byDate[r.date] = r;
+        }
+      }
+      if (dup > 0) {
+        localStorage.setItem(this.prefix + dbName, JSON.stringify(Object.values(byDate)));
+        changed = true;
+      }
+    }
+    return changed;
   },
 
   // ---------- 语录种子数据 ----------
