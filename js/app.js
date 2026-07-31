@@ -4,6 +4,9 @@
    ============================================ */
 
 const App = {
+  // 密码 SHA-256 哈希（默认: lily2024）
+  PASSWORD_HASH: 'c3c762d8dfb89368c64898c723d338059806dc98d1538b0a9c1d812c2aa0575e',
+
   currentRoute: 'dashboard',
   expandedNav: new Set(),
   todoFilter: 'today',
@@ -16,6 +19,12 @@ const App = {
 
   // ---------- 初始化 ----------
   init() {
+    // 登录门禁：未认证不加载内容
+    if (!this.checkAuth()) {
+      this.showLogin();
+      return;
+    }
+
     // 初始化数据
     Store.init();
 
@@ -156,6 +165,56 @@ const App = {
     this.renderSidebar();
   },
 
+  // ---------- 登录门禁 ----------
+  checkAuth() {
+    return sessionStorage.getItem('wb_authenticated') === 'true';
+  },
+
+  async hashPassword(pwd) {
+    const encoder = new TextEncoder();
+    const data = encoder.encode(pwd);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  },
+
+  showLogin() {
+    document.getElementById('app').style.display = 'none';
+    const overlay = document.getElementById('login-overlay');
+    overlay.style.display = 'flex';
+
+    const doLogin = async () => {
+      const pwd = document.getElementById('login-pwd').value.trim();
+      const errEl = document.getElementById('login-error');
+      if (!pwd) { errEl.textContent = '请输入密码'; return; }
+
+      const hash = await this.hashPassword(pwd);
+      if (hash === this.PASSWORD_HASH) {
+        sessionStorage.setItem('wb_authenticated', 'true');
+        overlay.style.display = 'none';
+        document.getElementById('app').style.display = '';
+        this.init();
+        return;
+      }
+      errEl.textContent = '密码错误，请重试';
+      document.getElementById('login-pwd').value = '';
+      document.getElementById('login-pwd').focus();
+    };
+
+    document.getElementById('login-btn').onclick = doLogin;
+    document.getElementById('login-pwd').onkeydown = (e) => {
+      if (e.key === 'Enter') doLogin();
+    };
+
+    // 自动聚焦
+    setTimeout(() => document.getElementById('login-pwd').focus(), 200);
+  },
+
+  logout() {
+    sessionStorage.removeItem('wb_authenticated');
+    location.reload();
+  },
+
   // ---------- 数据导出 ----------
   exportData() {
     const backup = { _exportTime: new Date().toISOString(), _version: '1.0' };
@@ -245,6 +304,32 @@ const App = {
     Store.init();
     UI.toast('✅ 数据已清空并重置');
     this.rerender();
+  },
+
+  // ---------- 修改密码 ----------
+  async changePassword() {
+    const newPwd = document.getElementById('pwd-new').value.trim();
+    const repeat = document.getElementById('pwd-repeat').value.trim();
+    const msgEl = document.getElementById('pwd-msg');
+
+    if (!newPwd || newPwd.length < 4) {
+      msgEl.style.color = 'var(--danger)';
+      msgEl.textContent = '密码至少 4 位';
+      return;
+    }
+    if (newPwd !== repeat) {
+      msgEl.style.color = 'var(--danger)';
+      msgEl.textContent = '两次输入的密码不一致';
+      return;
+    }
+
+    const hash = await this.hashPassword(newPwd);
+    this.PASSWORD_HASH = hash;
+    msgEl.style.color = 'var(--info)';
+    msgEl.textContent = '密码已更新，下次访问时生效';
+
+    document.getElementById('pwd-new').value = '';
+    document.getElementById('pwd-repeat').value = '';
   },
 
   // ---------- 渲染内容区 ----------

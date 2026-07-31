@@ -2695,6 +2695,18 @@ const Pages = {
       </div>
     </div>`;
 
+    // ── 修改密码 ──
+    html += `<div class="card">
+      <h4>🔑 修改登录密码</h4>
+      <p class="text-sm text-muted mb-2">输入新密码后点击更新（密码仅做 SHA-256 哈希存储，不会明文保存）</p>
+      <div class="settings-pwd-row">
+        <input type="password" id="pwd-new" placeholder="输入新密码" maxlength="32" autocomplete="off">
+        <input type="password" id="pwd-repeat" placeholder="再次输入" maxlength="32" autocomplete="off">
+        <button id="pwd-update-btn" onclick="App.changePassword()">更新密码</button>
+      </div>
+      <p id="pwd-msg" class="text-sm mt-2" style="min-height:20px;"></p>
+    </div>`;
+
     // ── 数据统计 ──
     html += `<div class="card">
       <h4>📊 数据统计</h4>
