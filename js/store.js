@@ -106,10 +106,11 @@ const Store = {
       titleField: 'task_name',
       fields: [
         { name: 'task_name', label: '任务名称', type: 'title' },
-        { name: 'domain', label: '所属领域', type: 'select', options: ['英语学习', '观影', '阅读', '灵感执行', '生活', '追星', '身体护理', '购物'] },
+        { name: 'domain', label: '所属类别', type: 'select', options: ['英语学习', '观影', '阅读', '灵感执行', '生活', '追星', '身体护理', '购物', '工作', '学习'] },
         { name: 'deadline', label: '截止日期', type: 'date' },
         { name: 'priority', label: '优先级', type: 'select', options: ['高', '中', '低'] },
         { name: 'completed', label: '已完成', type: 'checkbox' },
+        { name: 'notes', label: '备注', type: 'text', note: '补充说明、链接、细节等' },
         { name: 'related_inspiration', label: '关联灵感', type: 'relation', relationDb: 'inspiration' },
       ]
     },
@@ -618,6 +619,8 @@ const Store = {
     // 同步自定义设置
     const cats = localStorage.getItem(this._exerciseCustomKey);
     if (cats) await this._syncPushSetting(this._exerciseCustomKey, JSON.parse(cats));
+    const todoCats = localStorage.getItem(this._todoCustomKey);
+    if (todoCats) await this._syncPushSetting(this._todoCustomKey, JSON.parse(todoCats));
     const artists = localStorage.getItem(this._starArtistsKey);
     if (artists) await this._syncPushSetting(this._starArtistsKey, JSON.parse(artists));
     const pwd = localStorage.getItem('wb_password_hash');
@@ -876,6 +879,104 @@ const Store = {
     return [...fixed, ...custom];
   },
 
+  // ========== 自定义 Todo 类别 ==========
+  _todoCustomKey: 'lily_todo_custom_cats',
+
+  _loadTodoCategories() {
+    try {
+      return JSON.parse(localStorage.getItem(this._todoCustomKey) || '[]');
+    } catch (e) { return []; }
+  },
+
+  _saveTodoCategories(cats) {
+    localStorage.setItem(this._todoCustomKey, JSON.stringify(cats));
+    this._syncPushSetting(this._todoCustomKey, cats);
+  },
+
+  // 获取所有自定义 Todo 类别（不含固定类别）
+  getCustomTodoCategories() {
+    return this._loadTodoCategories();
+  },
+
+  // 添加自定义 Todo 类别，返回新对象
+  addCustomTodoCategory(label, icon) {
+    const cats = this._loadTodoCategories();
+    const clean = (label || '').trim();
+    if (!clean) return null;
+    if (cats.find(c => c.label === clean)) return null;
+    // 不允许与固定类别重名
+    const fixed = this.schemas.todo_list.fields.find(f => f.name === 'domain').options;
+    if (fixed.includes(clean)) return null;
+    const cat = { id: 'todo-custom-' + Date.now(), label: clean, icon: icon || '📌' };
+    cats.push(cat);
+    this._saveTodoCategories(cats);
+    return cat;
+  },
+
+  // 删除自定义 Todo 类别（不删除该类别下的任务，仅让其归属为「其他」）
+  removeCustomTodoCategory(catId) {
+    const cats = this._loadTodoCategories();
+    const filtered = cats.filter(c => c.id !== catId);
+    this._saveTodoCategories(filtered);
+    return filtered;
+  },
+
+  // 获取所有 Todo 类别（固定 + 自定义）
+  getAllTodoCategoryLabels() {
+    const fixed = this.schemas.todo_list.fields.find(f => f.name === 'domain').options;
+    const custom = this._loadTodoCategories().map(c => c.label);
+    return [...fixed, ...custom];
+  },
+
+  // ========== 吃药颗数累计 ==========
+  // 统计所有打卡记录中「上午吃药」「下午吃药」的勾选总数
+  // 因为每天每条记录各自代表一次打卡（=1颗），勾选即+1、取消即-1，天然同步
+  getTotalMedPills() {
+    const all = this.getAll('daily_checkin');
+    let total = 0;
+    all.forEach(r => {
+      if (r.morning_meds) total++;
+      if (r.afternoon_meds) total++;
+    });
+    return total;
+  },
+
+  // ========== 清除示例（死）数据 ==========
+  // 移除早期初始化时写入的示例条目（Todo / 愿望清单 / 示例运动视频）
+  // 仅匹配应用内置示例的特征，不会误删用户真实数据
+  removeSampleData() {
+    let removed = 0;
+
+    const todoSamples = ['📝 词语积累10个', '🔄 今日复盘', '🖤 去黑头日'];
+    const todos = this.getAll('todo_list');
+    const keptTodos = todos.filter(t => !todoSamples.includes(t.task_name));
+    if (keptTodos.length !== todos.length) {
+      removed += todos.length - keptTodos.length;
+      this._save('todo_list', keptTodos);
+    }
+
+    const wishSamples = ['AirPods Pro 2', 'Kindle Paperwhite'];
+    const wishes = this.getAll('wishlist');
+    const keptWishes = wishes.filter(w => !wishSamples.includes(w.item_name));
+    if (keptWishes.length !== wishes.length) {
+      removed += wishes.length - keptWishes.length;
+      this._save('wishlist', keptWishes);
+    }
+
+    const videoSamples = [
+      '帕梅拉10分钟全身燃脂', '韩小四8分钟背部训练', '周六野腰部塑形',
+      '改善圆肩驼背5分钟', '睡前拉伸放松全身'
+    ];
+    const videos = this.getAll('exercise_videos');
+    const keptVideos = videos.filter(v => !videoSamples.includes(v.title));
+    if (keptVideos.length !== videos.length) {
+      removed += videos.length - keptVideos.length;
+      this._save('exercise_videos', keptVideos);
+    }
+
+    return removed;
+  },
+
   // 获取记录的标题值
   getTitle(dbName, record) {
     const schema = this.schemas[dbName];
@@ -992,62 +1093,11 @@ const Store = {
     }
     const wedStr = wednesday.toISOString().slice(0, 10);
 
-    // TodoList 预设数据
-    this.add('todo_list', {
-      task_name: '📝 词语积累10个',
-      domain: '英语学习',
-      deadline: today,
-      priority: '中',
-      completed: false,
-      related_inspiration: '',
-    });
-
-    this.add('todo_list', {
-      task_name: '🔄 今日复盘',
-      domain: '生活',
-      deadline: today,
-      priority: '低',
-      completed: false,
-      related_inspiration: '',
-    });
-
-    this.add('todo_list', {
-      task_name: '🖤 去黑头日',
-      domain: '身体护理',
-      deadline: wedStr,
-      priority: '中',
-      completed: false,
-      related_inspiration: '',
-    });
-
     // 每日打卡 - 今天的记录由仪表盘按需创建（避免与云端数据产生重复）
     // 不在此处预建种子记录，否则跨设备同步时会因 updatedAt 时间戳
     // 冲突导致云端已勾选数据被空白种子覆盖
-
-    // 示例运动视频
-    const sampleVideos = [
-      { title: '帕梅拉10分钟全身燃脂', platform: '哔哩哔哩', link: 'https://www.bilibili.com', duration: '10min', category: ['减脂塑型'] },
-      { title: '韩小四8分钟背部训练', platform: '哔哩哔哩', link: 'https://www.bilibili.com', duration: '8min', category: ['背部'] },
-      { title: '周六野腰部塑形', platform: '哔哩哔哩', link: 'https://www.bilibili.com', duration: '15min', category: ['腰部'] },
-      { title: '改善圆肩驼背5分钟', platform: '抖音', link: 'https://www.douyin.com', duration: '5min', category: ['背部'] },
-      { title: '睡前拉伸放松全身', platform: '抖音', link: 'https://www.douyin.com', duration: '12min', category: ['腰部', '其他'] },
-    ];
-    sampleVideos.forEach(v => this.add('exercise_videos', v));
-
-    // 示例愿望清单
-    const sampleWishlist = [
-      { item_name: 'AirPods Pro 2', category: '数码', price: 1899, link: 'https://www.apple.com.cn', priority: '很想要', purchased: false, notes: '降噪模式很需要' },
-      { item_name: 'Kindle Paperwhite', category: '数码', price: 998, link: '', priority: '一般', purchased: false, notes: '方便睡前阅读' },
-    ];
-    sampleWishlist.forEach(w => this.add('wishlist', w));
-
-    // 示例记账
-    const sampleAccounting = [
-      { date: today, item: '早餐', amount: 12, type: '支出', category: '餐饮', account: '微信', debt_status: '', notes: '' },
-      { date: today, item: '咖啡', amount: 18, type: '支出', category: '餐饮', account: '支付宝', debt_status: '', notes: '' },
-      { date: today, item: '花呗上月', amount: 876, type: '支出', category: '还款', account: '花呗', debt_status: '未还', notes: '7月账单' },
-    ];
-    sampleAccounting.forEach(a => this.add('accounting', a));
+    // 注意：Todo / 愿望清单 / 运动视频 / 记账 / 影视音 / 灵感 / 网站 / 资产 / 手工
+    // 等示例数据均已移除，工作台已投入使用，不再自动写入假数据。
 
     // 安溥个人专场（非 auto-seed，用户可自由编辑）
     const anpuConcert = this.getAll('star_tracking').find(r => r.artist === '安溥' && r.show_name.includes('时寐'));
@@ -1073,51 +1123,8 @@ const Store = {
     });
     if (migrated) this._save('star_tracking', allStar);
 
-    // 示例影视音
-    const sampleMedia = [
-      { name: '奥本海默', category: '电影', status: '想看', rating: 0, note: '', related_note: '' },
-      { name: '三体（Netflix）', category: '剧集', status: '想看', rating: 0, note: '', related_note: '' },
-      { name: '《活着》余华', category: '阅读', status: '想看', rating: 0, note: '', related_note: '' },
-    ];
-    sampleMedia.forEach(m => this.add('media_list', m));
-
-    // 示例灵感
-    this.add('inspiration', {
-      title: '赛博朋克故障转场特效', category: '特效制作灵感',
-      description: '用 RGB 分离 + 扫描线做故障转场，配合电子音乐节奏切换镜头',
-      reference: 'https://www.bilibili.com', converted: false,
-    });
-    this.add('inspiration', {
-      title: 'Vlog 节奏卡点剪辑', category: '剪辑灵感',
-      description: '根据音乐 BPM 自动卡点，适合旅行素材快剪',
-      reference: 'https://www.youtube.com', converted: false,
-    });
-
-    // 预设英语学习网站
-    const defaultSites = [
-      { name: 'EngLearner', url: 'https://englearner.com', desc: '综合英语学习平台，提供分级文章阅读与听力练习', icon: '📖' },
-      { name: 'Vocabulary.com', url: 'https://vocabulary.com', desc: '最智能的单词学习网站，自适应题目帮你彻底掌握词汇', icon: '🔤' },
-      { name: 'LetMeEnglish.com', url: 'https://letmeenglish.com', desc: '专注口语和听力训练，提供场景对话跟读', icon: '🗣️' },
-    ];
-    defaultSites.forEach(s => this.add('english_sites', s));
-
-    // 预设资产账户
-    const defaultAssets = [
-      { name: '微信钱包', type: '微信', balance: 0, account_num: '', is_credit: false, notes: '' },
-      { name: '支付宝', type: '支付宝', balance: 0, account_num: '', is_credit: false, notes: '' },
-      { name: '现金', type: '现金', balance: 0, account_num: '', is_credit: false, notes: '' },
-    ];
-    defaultAssets.forEach(a => this.add('assets', a));
-
     // 种子语录数据
     this.seedQuotes();
-
-    // 预设手工参考帖（仅首次）
-    this.add('handcraft', { title: '钩针符号科普大全', type: '钩织', status: '已完成', link: '', for_who: '', notes: '常用钩针符号对照表：X=短针, V=加针, A=减针, T=中长针, F=长针', is_reference: true });
-    this.add('handcraft', { title: '钩针型号与线材搭配指南', type: '钩织', status: '已完成', link: '', for_who: '', notes: '2.0mm适合蕾丝线, 3.0mm适合4股牛奶棉, 4.0mm适合5股牛奶棉', is_reference: true });
-    this.add('handcraft', { title: '入门线材推荐', type: '钩织', status: '已完成', link: '', for_who: '', notes: '萌娃娃4股牛奶棉（性价比高）、苏苏姐家（颜色多）、依棉（柔软适合玩偶）', is_reference: true });
-    this.add('handcraft', { title: '缝纫机基础操作指南', type: '缝纫', status: '已完成', link: '', for_who: '', notes: '穿线、换针、调张力、换压脚等基础操作', is_reference: true });
-    this.add('handcraft', { title: '常用布料种类与用途', type: '缝纫', status: '已完成', link: '', for_who: '', notes: '纯棉（衬衫/裙）、亚麻（夏季）、雪纺（飘逸裙）、灯芯绒（秋冬）、牛仔布', is_reference: true });
 
     localStorage.setItem(this.prefix + '_initialized', '1');
 

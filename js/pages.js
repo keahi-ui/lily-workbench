@@ -54,11 +54,16 @@ const Pages = {
     </div>`;
 
     // 卡片2：运动与吃药
+    const totalMeds = Store.getTotalMedPills();
     html += `<div class="checkin-group">
       <h4>🏃 运动与吃药</h4>
       ${this.checkinItem(checkin.id, 'exercise_done', '✅ 运动', checkin.exercise_done)}
       ${this.checkinItem(checkin.id, 'morning_meds', '💊 上午吃药', checkin.morning_meds)}
       ${this.checkinItem(checkin.id, 'afternoon_meds', '💊 下午吃药', checkin.afternoon_meds)}
+      <div class="med-total" style="margin-top:8px;padding:6px 10px;background:var(--mint-lightest);border-radius:8px;font-size:13px;">
+        💊 累计已吃 <b style="color:var(--mint-dark);">${totalMeds}</b> 颗
+        <span class="text-sm text-muted">（勾选即+1，取消即-1，自动统计历史）</span>
+      </div>
     </div>`;
 
     // 卡片3：喝水打卡
@@ -612,6 +617,7 @@ const Pages = {
     const today = Store.todayStr();
     const allTodos = Store.getAll('todo_list');
     const activeFilter = App.todoFilter || 'today';
+    const dateFilter = App.todoDateFilter || '';
 
     let filtered = allTodos;
     if (activeFilter === 'today') {
@@ -621,19 +627,23 @@ const Pages = {
       const startStr = start.toISOString().slice(0, 10);
       const endStr = end.toISOString().slice(0, 10);
       filtered = allTodos.filter(r => r.deadline >= startStr && r.deadline <= endStr);
-    } else if (activeFilter === 'all') {
-      filtered = allTodos;
+    } else if (activeFilter === 'date') {
+      filtered = dateFilter ? allTodos.filter(r => r.deadline === dateFilter) : allTodos;
     } else if (activeFilter === 'done') {
       filtered = allTodos.filter(r => r.completed);
+    } else {
+      filtered = allTodos;
     }
 
-    // 按领域分组
+    // 按类别分组（固定 + 自定义 + 实际出现的）
     const order = { '高': 0, '中': 1, '低': 2 };
     filtered.sort((a, b) => (order[a.priority] || 3) - (order[b.priority] || 3));
 
-    const domains = Store.schemas.todo_list.fields.find(f => f.name === 'domain').options;
+    const knownLabels = Store.getAllTodoCategoryLabels();
+    const present = new Set(filtered.map(t => t.domain || '生活'));
+    const allLabels = [...new Set([...knownLabels, ...present])];
     const groups = {};
-    domains.forEach(d => groups[d] = []);
+    allLabels.forEach(d => groups[d] = []);
     filtered.forEach(t => {
       const d = t.domain || '生活';
       if (!groups[d]) groups[d] = [];
@@ -643,14 +653,18 @@ const Pages = {
     html += `<div class="filter-bar">
       <span class="filter-chip ${activeFilter === 'today' ? 'active' : ''}" onclick="App.setTodoFilter('today')">今日</span>
       <span class="filter-chip ${activeFilter === 'week' ? 'active' : ''}" onclick="App.setTodoFilter('week')">本周</span>
+      <span class="filter-chip ${activeFilter === 'date' ? 'active' : ''}" onclick="App.setTodoFilter('date')">📅 按日期</span>
       <span class="filter-chip ${activeFilter === 'all' ? 'active' : ''}" onclick="App.setTodoFilter('all')">全部</span>
       <span class="filter-chip ${activeFilter === 'done' ? 'active' : ''}" onclick="App.setTodoFilter('done')">已完成</span>
+      <input type="date" class="form-input" style="width:auto;display:inline-block;padding:2px 8px;font-size:13px;" value="${UI.esc(dateFilter)}" onchange="App.setTodoDate(this.value)" title="选择日期查看当天待办">
+      <button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="App.addTodoCategory()">+ 类别</button>
+      <button class="btn btn-outline btn-sm" onclick="App.manageTodoCategories()">⚙️ 管理</button>
     </div>`;
 
     html += this.addButton('todo_list', '新增任务');
 
     let hasContent = false;
-    domains.forEach(d => {
+    allLabels.forEach(d => {
       if (groups[d] && groups[d].length > 0) {
         hasContent = true;
         html += `<div class="card">
@@ -661,9 +675,13 @@ const Pages = {
             <span class="cbx-label ${t.completed ? 'text-muted' : ''}" style="${t.completed ? 'text-decoration:line-through;' : ''}">${UI.esc(t.task_name)}</span>
             ${t.deadline ? `<span class="text-sm text-muted">${UI.esc(t.deadline)}</span>` : ''}
             ${t.priority === '高' ? '<span class="tag tag-danger">高</span>' : t.priority === '中' ? '<span class="tag tag-warn">中</span>' : '<span class="tag tag-gray">低</span>'}
+            ${t.notes ? `<span class="text-sm text-muted" title="${UI.esc(t.notes)}">📝</span>` : ''}
             <button class="btn btn-outline btn-sm btn-icon" onclick="UI.openFormModalById('todo_list', '${t.id}')" style="margin-left:auto;">✏️</button>
             <button class="btn btn-danger btn-sm btn-icon" onclick="App.deleteTodo('${t.id}')">🗑️</button>
           </div>`;
+          if (t.notes) {
+            html += `<div class="text-sm text-muted" style="margin:0 0 8px 28px;">📝 ${UI.esc(t.notes)}</div>`;
+          }
         });
         html += '</div>';
       }
@@ -676,7 +694,7 @@ const Pages = {
   },
 
   domainIcon(d) {
-    const icons = { '英语学习': '📚', '观影': '🎬', '阅读': '📖', '灵感执行': '💡', '生活': '🏠', '追星': '🎤', '身体护理': '🧘', '购物': '🛒' };
+    const icons = { '英语学习': '📚', '观影': '🎬', '阅读': '📖', '灵感执行': '💡', '生活': '🏠', '追星': '🎤', '身体护理': '🧘', '购物': '🛒', '工作': '💼', '学习': '📝' };
     return icons[d] || '📌';
   },
 
@@ -1506,6 +1524,7 @@ const Pages = {
       html += `<span class="filter-chip ${activeClass}" onclick="App.setConcertFilter('${s}')">${iconMap[s] || '📋'} ${s}</span>`;
     });
     html += `<button class="btn btn-primary btn-sm" style="margin-left:auto;" onclick="UI.openFormModal('star_tracking', {artist: '${artist}', status: '想看'})">+ 添加演出</button>`;
+    html += `<button class="btn btn-outline btn-sm" onclick="App.dedupeConcerts()" title="删除重复的演出记录">🔧 去重清理</button>`;
     html += '</div>';
 
     const filtered = (App.concertFilter || '全部') === '全部'
@@ -1585,6 +1604,7 @@ const Pages = {
       html += `<span class="filter-chip ${activeClass}" onclick="App.setConcertFilter('${s}')">${iconMap[s] || '📋'} ${s}</span>`;
     });
     html += `<button class="btn btn-primary btn-sm" style="margin-left:auto;" onclick="Pages.showAddConcertForOther()">+ 添加演出</button>`;
+    html += `<button class="btn btn-outline btn-sm" onclick="App.dedupeConcerts()" title="删除重复的演出记录">🔧 去重清理</button>`;
     html += '</div>';
 
     // 查询演出
@@ -1991,6 +2011,30 @@ const Pages = {
     }
     recentHtml += '</div>';
     html += recentHtml;
+
+    // 最近夸夸（点击日历某一天也可查看当天夸夸）
+    let praiseHtml = '<div class="card mt-3"><div class="card-title">🌸 最近夸夸</div>';
+    const todayD = new Date();
+    let hasPraise = false;
+    for (let i = 0; i < 30; i++) {
+      const d = new Date(todayD);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().slice(0, 10);
+      const rec = Store.query('daily_checkin', r => r.date === dateStr)[0];
+      if (rec && rec.praise && rec.praise.trim()) {
+        hasPraise = true;
+        praiseHtml += `<div style="margin-bottom:10px;padding:8px 10px;background:var(--mint-lightest);border-radius:8px;">
+          <div class="text-sm font-bold" style="margin-bottom:2px;">${UI.esc(dateStr)} <span class="text-muted" style="font-weight:normal;">${['日','一','二','三','四','五','六'][d.getDay()]}</span></div>
+          <div class="text-sm" style="white-space:pre-wrap;">${UI.esc(rec.praise)}</div>
+        </div>`;
+      }
+    }
+    if (!hasPraise) {
+      praiseHtml += '<p class="text-sm text-muted">还没有记录过夸夸，去今日仪表盘写下第一句吧～</p>';
+    }
+    praiseHtml += '</div>';
+    html += praiseHtml;
+
     return html;
   },
 
@@ -2737,6 +2781,13 @@ const Pages = {
         <b>导入恢复</b>：选择之前导出的 JSON 文件，恢复所有数据。<br>
         <span style="color:var(--warn);">注意：导入会覆盖当前同名的数据，不会清除其他数据。</span>
       </p>
+    </div>`;
+
+    // ── 清理示例数据 ──
+    html += `<div class="card" style="border-left:4px solid var(--warn);">
+      <h4>🧹 清除示例数据</h4>
+      <p class="text-sm text-muted mb-2">早期版本会自动写入一些示例 Todo / 愿望清单 / 运动视频。若你已投入使用，可一键清除这些假数据（仅移除应用内置示例，不会误删你的真实记录），并同步到云端。</p>
+      <button class="btn btn-outline" style="color:var(--warn);border-color:var(--warn);" onclick="if(confirm('确定清除示例数据吗？仅移除应用内置的示例条目。')) App.clearSampleData()">🧹 清除示例数据</button>
     </div>`;
 
     // ── 危险操作 ──

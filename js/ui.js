@@ -365,6 +365,13 @@ const UI = {
         artistField.options = Store.getAllStarArtists();
       }
     }
+    // 动态更新 todo_list 的类别选项（包含自定义类别）
+    if (dbName === 'todo_list') {
+      const domainField = fieldsToShow.find(f => f.name === 'domain');
+      if (domainField) {
+        domainField.options = Store.getAllTodoCategoryLabels();
+      }
+    }
 
     let formHtml = '';
 

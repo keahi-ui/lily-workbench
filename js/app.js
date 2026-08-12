@@ -22,6 +22,7 @@ const App = {
   currentRoute: 'dashboard',
   expandedNav: new Set(),
   todoFilter: 'today',
+  todoDateFilter: '',
   mediaFilter: '全部',
   concertFilter: '全部',
   starArtistFilter: '全部',
@@ -449,6 +450,21 @@ const App = {
     Store.update('daily_checkin', recordId, { [fieldName]: value });
   },
 
+  // ---------- 日历总览中直接勾选打卡 ----------
+  // 与今日仪表盘共享同一条 daily_checkin 记录，勾选即同步
+  toggleCalendarCheckin(dateStr, fieldName, el) {
+    const record = Store.query('daily_checkin', r => r.date === dateStr)[0];
+    if (!record) {
+      UI.toast('⚠️ 该日期暂无打卡记录');
+      return;
+    }
+    const newVal = !record[fieldName];
+    Store.update('daily_checkin', record.id, { [fieldName]: newVal });
+    if (el) el.classList.toggle('checked', newVal);
+    // 同步刷新底层页面（仪表盘 / 7天概览在弹窗关闭后可见）
+    this.rerender();
+  },
+
   // ---------- Todo 切换完成 ----------
   toggleTodo(todoId) {
     const todo = Store.getById('todo_list', todoId);
@@ -466,6 +482,13 @@ const App = {
   // ---------- 设置 Todo 筛选 ----------
   setTodoFilter(filter) {
     this.todoFilter = filter;
+    this.rerender();
+  },
+
+  // ---------- 按日期筛选 Todo ----------
+  setTodoDate(dateStr) {
+    this.todoDateFilter = dateStr || '';
+    this.todoFilter = dateStr ? 'date' : 'all';
     this.rerender();
   },
 
@@ -840,13 +863,16 @@ const App = {
         html += `<div style="margin-bottom:8px;"><span class="text-sm font-bold">${g.title}</span>`;
         g.fields.forEach(fn => {
           const field = Store.schemas.daily_checkin.fields.find(f => f.name === fn);
-          html += `<div class="checkbox-row" style="padding:3px 0;">
-            <span class="cbx ${record[fn] ? 'checked' : ''}" style="width:16px;height:16px;"></span>
-            <span class="text-sm">${field ? field.label : fn}</span>
+          const isChecked = record[fn];
+          html += `<div class="checkbox-row" style="padding:3px 0;cursor:pointer;">
+            <span class="cbx ${isChecked ? 'checked' : ''}" style="width:16px;height:16px;" onclick="App.toggleCalendarCheckin('${dateStr}', '${fn}', this)"></span>
+            <span class="text-sm ${isChecked ? '' : 'text-muted'}">${field ? field.label : fn}</span>
           </div>`;
         });
         html += '</div>';
       });
+
+      html += `<p class="text-sm text-muted" style="margin-top:4px;">👆 点击上方项目可直接勾选/取消，已自动同步到今日仪表盘</p>`;
 
       if (record.praise) {
         html += `<div class="mt-3"><span class="text-sm font-bold">🌸 今日夸夸</span><p class="text-sm" style="padding:8px;background:var(--mint-lightest);border-radius:8px;">${UI.esc(record.praise)}</p></div>`;
@@ -1056,6 +1082,85 @@ const App = {
       related_inspiration: '',
     });
     UI.toast('✅ 已创建去黑头任务');
+    this.rerender();
+  },
+
+  // ---------- 新增自定义 Todo 类别 ----------
+  addTodoCategory() {
+    const name = prompt('请输入新的 Todo 类别名称（例如：副业、健身、旅行…）');
+    if (!name) return;
+    const cat = Store.addCustomTodoCategory(name.trim());
+    if (!cat) {
+      UI.toast('⚠️ 该类别已存在或与固定类别重名');
+      return;
+    }
+    UI.toast(`✅ 已添加类别「${cat.label}」`);
+    this.rerender();
+  },
+
+  // ---------- 管理自定义 Todo 类别 ----------
+  manageTodoCategories() {
+    const cats = Store.getCustomTodoCategories();
+    let html = '<p class="text-sm text-muted mb-3">删除类别不会删除该类别下的任务，相关任务将归入「其他」。</p>';
+    if (cats.length === 0) {
+      html += '<p class="text-sm text-muted">暂无自定义类别。固定类别：' +
+        Store.schemas.todo_list.fields.find(f => f.name === 'domain').options.join('、') + '</p>';
+    } else {
+      html += '<div class="flex flex-wrap gap-2">';
+      cats.forEach(c => {
+        html += `<span class="tag" style="cursor:default;font-size:14px;padding:6px 10px;">
+          ${c.icon || '📌'} ${UI.esc(c.label)}
+          <button class="btn btn-danger btn-sm" style="margin-left:8px;padding:0 8px;font-size:11px;" onclick="event.stopPropagation();App.removeTodoCategory('${c.id}')">✕ 删除</button>
+        </span>`;
+      });
+      html += '</div>';
+    }
+    UI.openModal('管理 Todo 类别', html, null, true);
+  },
+
+  removeTodoCategory(catId) {
+    if (!confirm('确定删除该自定义类别吗？')) return;
+    Store.removeCustomTodoCategory(catId);
+    UI.toast('🗑️ 已删除类别');
+    if (typeof UI.closeModal === 'function') UI.closeModal();
+    this.rerender();
+  },
+
+  // ---------- 演出资讯去重 ----------
+  // 按「艺人 + 演出名称 + 演出日期」判定重复，保留信息更全（updatedAt 较新）的一条
+  dedupeConcerts() {
+    const all = Store.getAll('star_tracking');
+    const map = {};
+    let removed = 0;
+    // 排序：信息更完整 / 更新更晚的优先保留
+    const scored = all.map(r => {
+      let score = 0;
+      ['city', 'venue', 'ticket_date', 'ticket_platform', 'ticket_price', 'notes'].forEach(k => {
+        if (r[k] && r[k] !== '') score += 1;
+      });
+      if (r.source && r.source.includes('auto')) score -= 0.5; // 自动抓取略低优先
+      return { r, score, ts: new Date(r.updatedAt || 0).getTime() };
+    }).sort((a, b) => (b.score - a.score) || (b.ts - a.ts));
+
+    const kept = [];
+    for (const { r } of scored) {
+      const key = `${r.artist}__${r.show_name}__${r.show_date}`;
+      if (map[key]) { Store.delete('star_tracking', r.id); removed++; }
+      else { map[key] = true; kept.push(r); }
+    }
+    UI.toast(removed > 0 ? `✅ 已删除 ${removed} 条重复演出` : '✅ 没有发现重复演出');
+    this.rerender();
+    return removed;
+  },
+
+  // ---------- 清除示例（死）数据 ----------
+  clearSampleData() {
+    const removed = Store.removeSampleData();
+    // 强制把受影响的表推送到云端，避免云端陈旧示例数据在下次拉取时又被加回来
+    ['todo_list', 'wishlist', 'exercise_videos'].forEach(db => {
+      if (typeof Store._syncPushTable === 'function') Store._syncPushTable(db);
+    });
+    UI.toast(removed > 0 ? `🧹 已清除 ${removed} 条示例数据，并同步云端` : '✅ 未发现示例数据');
     this.rerender();
   },
 
