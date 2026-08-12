@@ -622,6 +622,11 @@ const Pages = {
     let filtered = allTodos;
     if (activeFilter === 'today') {
       filtered = allTodos.filter(r => !r.completed && r.deadline <= today);
+    } else if (activeFilter === 'tomorrow') {
+      const tmr = new Date();
+      tmr.setDate(tmr.getDate() + 1);
+      const tmrStr = tmr.toISOString().slice(0, 10);
+      filtered = allTodos.filter(r => !r.completed && r.deadline === tmrStr);
     } else if (activeFilter === 'week') {
       const { start, end } = Store.getWeekRange(new Date());
       const startStr = start.toISOString().slice(0, 10);
@@ -652,6 +657,7 @@ const Pages = {
 
     html += `<div class="filter-bar">
       <span class="filter-chip ${activeFilter === 'today' ? 'active' : ''}" onclick="App.setTodoFilter('today')">今日</span>
+      <span class="filter-chip ${activeFilter === 'tomorrow' ? 'active' : ''}" onclick="App.setTodoFilter('tomorrow')">明天</span>
       <span class="filter-chip ${activeFilter === 'week' ? 'active' : ''}" onclick="App.setTodoFilter('week')">本周</span>
       <span class="filter-chip ${activeFilter === 'date' ? 'active' : ''}" onclick="App.setTodoFilter('date')">📅 按日期</span>
       <span class="filter-chip ${activeFilter === 'all' ? 'active' : ''}" onclick="App.setTodoFilter('all')">全部</span>
