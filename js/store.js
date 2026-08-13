@@ -239,6 +239,18 @@ const Store = {
       ]
     },
 
+    // 数据库 16：夸夸收集（独立表，与日记平级）
+    praise: {
+      label: '夸夸收集',
+      titleField: 'content',
+      fields: [
+        { name: 'date', label: '日期', type: 'date' },
+        { name: 'content', label: '夸夸内容', type: 'longtext' },
+        { name: 'mood', label: '心情', type: 'select', options: ['🌟超棒', '😌平静', '😴疲惫', '😢难过', '😰焦虑', '🤩兴奋', '😤生气'] },
+        { name: 'from_who', label: '来自谁/场景', type: 'text' },
+      ]
+    },
+
     // 数据库 15：资产库
     assets: {
       label: '资产库',
@@ -371,6 +383,7 @@ const Store = {
     { id: 'daily-checkin', label: '每日打卡', icon: '🎯' },
     { id: 'weekly-review', label: '周复盘', icon: '📅' },
     { id: 'diary', label: '日记', icon: '📔' },
+    { id: 'praise', label: '夸夸收集', icon: '🌸' },
     { id: 'handcraft', label: '手工', icon: '🧶', children: [
       { id: 'handcraft-crochet', label: '钩织', icon: '🧵' },
       { id: 'handcraft-sewing', label: '缝纫', icon: '🪡' },
@@ -392,6 +405,23 @@ const Store = {
 
   getById(dbName, id) {
     return this.getAll(dbName).find(r => r.id === id);
+  },
+
+  // ---------- 夸夸收集 ----------
+  getPraiseByDate(date) {
+    return this.getAll('praise').filter(r => r.date === date).sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+  },
+  getAllPraise() {
+    return this.getAll('praise').sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
+  },
+  saveDayPraise(date, lines, mood, fromWho) {
+    this.getAll('praise').filter(r => r.date === date).forEach(r => this.delete('praise', r.id));
+    (lines || []).forEach(content => {
+      this.add('praise', { date, content, mood: mood || '', from_who: fromWho || '', createdAt: new Date().toISOString() });
+    });
+  },
+  deleteDayPraise(date) {
+    this.getAll('praise').filter(r => r.date === date).forEach(r => this.delete('praise', r.id));
   },
 
   add(dbName, record) {
@@ -1127,6 +1157,28 @@ const Store = {
     this.seedQuotes();
 
     localStorage.setItem(this.prefix + '_initialized', '1');
+
+    // 夸夸数据迁移：旧版本把夸夸存在 daily_checkin.praise，迁移到独立 praise 表（仅一次）
+    if (!localStorage.getItem(this.prefix + 'praise_migrated')) {
+      if (this.getAll('praise').length === 0) {
+        const linesByDate = {};
+        const checkins = this.getAll('daily_checkin');
+        checkins.forEach(c => {
+          if (c.praise && c.praise.trim()) {
+            linesByDate[c.date] = (linesByDate[c.date] || []).concat(
+              c.praise.split('\n').map(s => s.trim()).filter(Boolean)
+            );
+            c.praise = '';
+          }
+        });
+        Object.keys(linesByDate).forEach(d => this.saveDayPraise(d, linesByDate[d]));
+        if (checkins.some(c => !c.praise)) {
+          this._save('daily_checkin', checkins);
+          if (this._schedulePush) this._schedulePush('daily_checkin');
+        }
+      }
+      localStorage.setItem(this.prefix + 'praise_migrated', '1');
+    }
 
     } // end if (isFirstInit) — 种子数据仅首次填充
 

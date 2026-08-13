@@ -88,9 +88,10 @@ const Pages = {
     </div>`;
 
     // 卡片5：今日夸夸
+    const todayPraise = Store.getPraiseByDate(Store.todayStr()).map(p => p.content).join('\n');
     html += `<div class="checkin-group">
       <h4>🌸 今日夸夸</h4>
-      <textarea class="form-textarea" placeholder="今天也要好好夸夸自己呀～" onblur="App.saveCheckinField('${checkin.id}', 'praise', this.value)">${UI.esc(checkin.praise || '')}</textarea>
+      <textarea class="form-textarea" placeholder="今天也要好好夸夸自己呀～（每行一句）" onblur="App.saveDayPraise(this.value)">${UI.esc(todayPraise)}</textarea>
     </div>`;
 
     // 卡片6：今日心情
@@ -2020,23 +2021,21 @@ const Pages = {
 
     // 最近夸夸（点击日历某一天也可查看当天夸夸）
     let praiseHtml = '<div class="card mt-3"><div class="card-title">🌸 最近夸夸</div>';
-    const todayD = new Date();
-    let hasPraise = false;
-    for (let i = 0; i < 30; i++) {
-      const d = new Date(todayD);
-      d.setDate(d.getDate() - i);
-      const dateStr = d.toISOString().slice(0, 10);
-      const rec = Store.query('daily_checkin', r => r.date === dateStr)[0];
-      if (rec && rec.praise && rec.praise.trim()) {
-        hasPraise = true;
-        praiseHtml += `<div style="margin-bottom:10px;padding:8px 10px;background:var(--mint-lightest);border-radius:8px;">
-          <div class="text-sm font-bold" style="margin-bottom:2px;">${UI.esc(dateStr)} <span class="text-muted" style="font-weight:normal;">${['日','一','二','三','四','五','六'][d.getDay()]}</span></div>
-          <div class="text-sm" style="white-space:pre-wrap;">${UI.esc(rec.praise)}</div>
-        </div>`;
-      }
-    }
-    if (!hasPraise) {
+    const tD = new Date();
+    const tsa = new Date(tD); tsa.setDate(tsa.getDate() - 30);
+    const tsaStr = tsa.toISOString().slice(0, 10);
+    const recentPraises = Store.getAllPraise().filter(p => p.date >= tsaStr);
+    const wds = ['日', '一', '二', '三', '四', '五', '六'];
+    if (recentPraises.length === 0) {
       praiseHtml += '<p class="text-sm text-muted">还没有记录过夸夸，去今日仪表盘写下第一句吧～</p>';
+    } else {
+      recentPraises.slice(0, 20).forEach(p => {
+        const d = new Date(p.date);
+        praiseHtml += `<div style="margin-bottom:10px;padding:8px 10px;background:var(--mint-lightest);border-radius:8px;">
+          <div class="text-sm font-bold" style="margin-bottom:2px;">${UI.esc(p.date)} <span class="text-muted" style="font-weight:normal;">周${wds[d.getDay()]}</span></div>
+          <div class="text-sm" style="white-space:pre-wrap;">${UI.esc(p.content)}</div>
+        </div>`;
+      });
     }
     praiseHtml += '</div>';
     html += praiseHtml;
@@ -2174,6 +2173,146 @@ const Pages = {
       html += '</div>';
     }
     return html;
+  },
+
+  // ==========================================
+  // 14.5 夸夸收集（与日记平级）
+  // ==========================================
+  praise() {
+    let html = this.header('🌸 夸夸收集', '收集每一句对自我的温柔肯定');
+    const all = Store.getAllPraise();
+    const today = Store.todayStr();
+    const days = new Set(all.map(p => p.date));
+    const wds = ['日', '一', '二', '三', '四', '五', '六'];
+
+    // 统计卡片
+    html += `<div class="card card-dot-border">
+      <div class="flex items-center justify-between">
+        <div>
+          <div class="text-sm text-muted">累计收集</div>
+          <div class="font-bold" style="font-size:26px;">🌸 ${all.length} 句</div>
+        </div>
+        <div style="text-align:right;">
+          <div class="text-sm text-muted">坚持天数</div>
+          <div class="font-bold" style="font-size:26px;">${days.size} 天</div>
+        </div>
+      </div>
+      ${all.length ? `<p class="text-sm text-muted mt-2">最近一次：${UI.esc(all[0].date)}</p>` : '<p class="text-sm text-muted mt-2">还没有夸夸，去写下第一句吧～</p>'}
+    </div>`;
+
+    // 搜索 + 日期筛选
+    const kw = App.praiseKeyword || '';
+    const dateFilter = App.praiseDateFilter || '';
+    html += `<div class="filter-bar">
+      <input type="text" class="form-input" style="flex:1;min-width:110px;" placeholder="🔍 搜索内容（回车）" value="${UI.esc(kw)}" onchange="App.setPraiseKeyword(this.value)">
+      <input type="date" class="form-input" style="width:auto;" value="${UI.esc(dateFilter)}" onchange="App.setPraiseDate(this.value)" title="按日期筛选">
+      ${dateFilter ? `<button class="btn btn-outline btn-sm" onclick="App.setPraiseDate('')">✕</button>` : ''}
+      <button class="btn btn-primary btn-sm" style="margin-left:auto;" onclick="Pages.editPraiseDay('${today}')">+ 写夸夸</button>
+    </div>`;
+
+    // 过滤
+    let filtered = all;
+    if (kw) filtered = filtered.filter(p => (p.content || '').includes(kw) || (p.from_who || '').includes(kw));
+    if (dateFilter) filtered = filtered.filter(p => p.date === dateFilter);
+
+    // 按日期分组倒序
+    const byDate = {};
+    filtered.forEach(p => { (byDate[p.date] = byDate[p.date] || []).push(p); });
+    const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
+
+    if (dates.length === 0) {
+      html += UI.emptyState('🌸', kw || dateFilter ? '没有匹配的夸夸' : '还没有夸夸记录');
+    } else {
+      dates.forEach(date => {
+        const items = byDate[date];
+        const d = new Date(date);
+        html += `<div class="card">
+          <div class="flex items-center justify-between">
+            <div class="card-title" style="margin:0;">📅 ${UI.esc(date)} <span class="text-muted" style="font-weight:normal;">周${wds[d.getDay()]}</span> <span class="badge">${items.length}</span></div>
+            <div class="flex gap-2">
+              <button class="btn btn-outline btn-sm" onclick="Pages.editPraiseDay('${date}')">✏️ 编辑</button>
+              <button class="btn btn-danger btn-sm" onclick="Pages.deletePraiseDay('${date}')">🗑️</button>
+            </div>
+          </div>`;
+        items.forEach(p => {
+          const m = (p.mood || '').split('').slice(0, 1).join('') || '🌸';
+          html += `<div style="margin-top:8px;padding:8px 12px;background:var(--mint-lightest);border-radius:12px;border-left:3px solid var(--mint);">
+            <div class="flex items-center gap-2">
+              <span>${m}</span>
+              <span class="text-sm" style="white-space:pre-wrap;">${UI.esc(p.content)}</span>
+            </div>
+            ${p.from_who ? `<div class="text-xs text-muted mt-1">— ${UI.esc(p.from_who)}</div>` : ''}
+          </div>`;
+        });
+        html += '</div>';
+      });
+    }
+
+    // 日历（点击某天筛选）
+    html += `<div class="mt-3"><div class="card-title">📅 点选日期查看当天夸夸</div>`;
+    html += UI.calendar({
+      dbName: 'praise',
+      dateField: 'date',
+      year: App.calendarYear,
+      month: App.calendarMonth,
+      onDayClick: 'Pages.praisePickDate',
+      markerFn: (dayRecords) => dayRecords.length ? `<div class="dot-marker"><span style="background:var(--mint)"></span></div>` : '',
+    });
+    html += '</div>';
+
+    return html;
+  },
+
+  // 日历点击：筛选某天
+  praisePickDate(dateStr) {
+    App.praiseDateFilter = dateStr;
+    App.rerender();
+  },
+
+  // 编辑某天夸夸（含新增）
+  editPraiseDay(date) {
+    const items = Store.getPraiseByDate(date);
+    const existing = items.map(p => p.content).join('\n');
+    const curMood = items[0] ? (items[0].mood || '') : '';
+    const curFrom = items[0] ? (items[0].from_who || '') : '';
+    const moods = ['🌟超棒', '😌平静', '😴疲惫', '😢难过', '😰焦虑', '🤩兴奋', '😤生气'];
+    let html = `<div class="form-group"><label>📅 日期</label><input type="date" class="form-input" id="praise-edit-date" value="${UI.esc(date)}"></div>`;
+    html += `<div class="form-group"><label>🌸 夸夸内容（每行一句）</label>
+      <textarea class="form-textarea" id="praise-edit-content" style="min-height:160px;" placeholder="今天也很棒，写下来吧～">${UI.esc(existing)}</textarea></div>`;
+    html += `<div class="form-group"><label>😊 心情</label><div class="flex gap-2 flex-wrap" id="praise-edit-moods">
+      ${moods.map(m => `<span class="filter-chip ${curMood === m ? 'active' : ''}" data-m="${m}" onclick="Pages._pickPraiseMood(this,'${m}')">${m}</span>`).join('')}
+      <input type="hidden" id="praise-edit-mood" value="${UI.esc(curMood)}"></div></div>`;
+    html += `<div class="form-group"><label>来自谁/场景（可选）</label>
+      <input type="text" class="form-input" id="praise-edit-from" value="${UI.esc(curFrom)}" placeholder="如：自己 / 妈妈 / 同事"></div>`;
+    html += `<div class="flex gap-2">
+      <button class="btn btn-primary flex-1" onclick="Pages.savePraiseDay('${date}')">💾 保存</button>
+      <button class="btn btn-outline" onclick="UI.closeModal()">取消</button></div>`;
+    UI.openModal('✏️ 编辑夸夸 · ' + date, html);
+  },
+
+  _pickPraiseMood(el, m) {
+    el.parentElement.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('praise-edit-mood').value = m;
+  },
+
+  savePraiseDay(oldDate) {
+    const date = document.getElementById('praise-edit-date').value || oldDate;
+    const content = document.getElementById('praise-edit-content').value;
+    const mood = document.getElementById('praise-edit-mood').value;
+    const fromWho = document.getElementById('praise-edit-from').value;
+    const lines = (content || '').split('\n').map(s => s.trim()).filter(Boolean);
+    Store.saveDayPraise(date, lines, mood, fromWho);
+    UI.closeModal();
+    UI.toast('🌸 夸夸已保存');
+    App.rerender();
+  },
+
+  deletePraiseDay(date) {
+    if (typeof confirm === 'function' && !confirm('确定删除 ' + date + ' 的所有夸夸吗？')) return;
+    Store.deleteDayPraise(date);
+    UI.toast('已删除该天夸夸');
+    App.rerender();
   },
 
   // 日记心情选择
@@ -2704,6 +2843,7 @@ const Pages = {
       case 'daily-checkin': return this.dailyCheckin();
       case 'weekly-review': return this.weeklyReview();
       case 'diary': return this.diary();
+      case 'praise': return this.praise();
       case 'handcraft': return this.handcraftKanban();
       case 'handcraft-crochet': return this.handcraftTable('钩织');
       case 'handcraft-sewing': return this.handcraftTable('缝纫');

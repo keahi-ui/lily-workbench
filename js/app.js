@@ -23,6 +23,8 @@ const App = {
   expandedNav: new Set(),
   todoFilter: 'today',
   todoDateFilter: '',
+  praiseKeyword: '',
+  praiseDateFilter: '',
   mediaFilter: '全部',
   concertFilter: '全部',
   starArtistFilter: '全部',
@@ -492,6 +494,24 @@ const App = {
     this.rerender();
   },
 
+  // ---------- 夸夸收集筛选 ----------
+  setPraiseKeyword(kw) {
+    this.praiseKeyword = kw || '';
+    this.rerender();
+  },
+  setPraiseDate(dateStr) {
+    this.praiseDateFilter = dateStr || '';
+    this.rerender();
+  },
+
+  // ---------- 保存今日夸夸（写入独立 praise 表）----------
+  saveDayPraise(value) {
+    const today = Store.todayStr();
+    const lines = (value || '').split('\n').map(s => s.trim()).filter(Boolean);
+    Store.saveDayPraise(today, lines);
+    UI.toast('🌸 夸夸已保存');
+  },
+
   // ---------- 设置影视音筛选 ----------
   setMediaFilter(filter) {
     this.mediaFilter = filter;
@@ -744,17 +764,14 @@ const App = {
 
     // 痛经关怀：中度/严重时自动添加夸夸和Todo建议
     if (data.period_pain === '中度' || data.period_pain === '严重') {
-      const checkin = Store.query('daily_checkin', r => r.date === today)[0];
-      if (checkin) {
-        const comforts = [
-          '今天辛苦啦，多喝热水，抱抱自己 ❤️',
-          '经期辛苦了，允许自己今天慢一点 🌸',
-          '痛经不是你的错，你已经很棒了 💪',
-          '红糖水、热水袋、一部好电影 — 你值得被好好照顾 🧣',
-        ];
-        const msg = comforts[Math.floor(Math.random() * comforts.length)];
-        Store.update('daily_checkin', checkin.id, { praise: (checkin.praise ? checkin.praise + '\n' : '') + msg });
-      }
+      const comforts = [
+        '今天辛苦啦，多喝热水，抱抱自己 ❤️',
+        '经期辛苦了，允许自己今天慢一点 🌸',
+        '痛经不是你的错，你已经很棒了 💪',
+        '红糖水、热水袋、一部好电影 — 你值得被好好照顾 🧣',
+      ];
+      const msg = comforts[Math.floor(Math.random() * comforts.length)];
+      Store.add('praise', { date: today, content: msg, mood: '😢难过', from_who: '身体关怀', createdAt: new Date().toISOString() });
       // 检查是否已有红糖水任务
       const existingTask = Store.query('todo_list', r => r.deadline === today && r.task_name.includes('红糖水'));
       if (existingTask.length === 0) {
@@ -874,8 +891,13 @@ const App = {
 
       html += `<p class="text-sm text-muted" style="margin-top:4px;">👆 点击上方项目可直接勾选/取消，已自动同步到今日仪表盘</p>`;
 
-      if (record.praise) {
-        html += `<div class="mt-3"><span class="text-sm font-bold">🌸 今日夸夸</span><p class="text-sm" style="padding:8px;background:var(--mint-lightest);border-radius:8px;">${UI.esc(record.praise)}</p></div>`;
+      const dayPraise = Store.getPraiseByDate(dateStr);
+      if (dayPraise.length > 0) {
+        html += `<div class="mt-3"><span class="text-sm font-bold">🌸 今日夸夸</span>`;
+        dayPraise.forEach(p => {
+          html += `<p class="text-sm" style="padding:6px 8px;background:var(--mint-lightest);border-radius:8px;margin-top:4px;">${p.mood ? UI.esc(p.mood) + ' ' : ''}${UI.esc(p.content)}</p>`;
+        });
+        html += '</div>';
       }
       if (record.mood) {
         html += `<div class="mt-2"><span class="text-sm font-bold">😊 今日心情</span><p class="text-sm">${record.mood}</p></div>`;
