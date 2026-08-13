@@ -132,7 +132,7 @@ const UI = {
   },
 
   // ---------- Todo 所属类别：下拉内新增类别 ----------
-  // 在下拉框末尾提供「➕ 新增类别...」选项，选中后用浏览器输入框取得新类别名，
+  // 在下拉框末尾提供「➕ 新增类别...」选项，选中后弹出同款淡绿浮层，
   // 即时写入 Store 并刷新当前下拉（不关闭待办表单弹窗）。
   onTodoDomainSelect(selectEl) {
     const val = selectEl.value;
@@ -141,24 +141,64 @@ const UI = {
       selectEl.dataset.prev = val;
       return;
     }
-    const name = window.prompt('输入新的 Todo 类别名称（例如：副业、健身、旅行…）');
-    if (!name || !name.trim()) {
-      selectEl.value = selectEl.dataset.prev || '';
-      return;
-    }
-    const cat = Store.addCustomTodoCategory(name.trim());
-    if (!cat) {
-      this.toast('⚠️ 该类别已存在或与固定类别重名');
-      selectEl.value = selectEl.dataset.prev || '';
-      return;
-    }
-    // 刷新下拉选项，并把新类别设为选中
-    const labels = Store.getAllTodoCategoryLabels();
-    let html = '<option value="">请选择</option>' +
-      labels.map(o => `<option value="${this.esc(o)}" ${o === cat.label ? 'selected' : ''}>${this.esc(o)}</option>`).join('');
-    html += '<option value="__add_todo_cat__">➕ 新增类别...</option>';
-    selectEl.innerHTML = html;
-    this.toast(`✅ 已添加类别「${cat.label}」`);
+    this._openCatPopover(selectEl);
+  },
+
+  // 新增类别浮层（覆盖在待办表单之上，不破坏正在填写的表单）
+  _openCatPopover(selectEl) {
+    const EMOJIS = ['📌', '💡', '🏃', '📚', '💼', '🎨', '✈️', '🎮', '🍳', '🌟'];
+    let chosen = '📌';
+    const overlay = document.createElement('div');
+    overlay.className = 'cat-popover-overlay';
+    overlay.innerHTML = `
+      <div class="cat-popover" onclick="event.stopPropagation()">
+        <h3>🌿 新增 Todo 类别</h3>
+        <p class="sub">给你的待办分个专属小类别吧～</p>
+        <input class="form-input" id="cat-pop-name" placeholder="如：副业、健身、旅行…" maxlength="10">
+        <div class="emoji-row">
+          ${EMOJIS.map(e => `<span class="emoji-opt ${e === chosen ? 'active' : ''}" data-emoji="${e}">${e}</span>`).join('')}
+        </div>
+        <div class="modal-footer" style="margin-top:8px;">
+          <button class="btn btn-outline" id="cat-pop-cancel">取消</button>
+          <button class="btn btn-primary" id="cat-pop-ok">添加</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    setTimeout(() => overlay.querySelector('#cat-pop-name')?.focus(), 50);
+
+    const close = () => {
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      if (selectEl.value === '__add_todo_cat__') selectEl.value = selectEl.dataset.prev || '';
+    };
+
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    overlay.querySelectorAll('.emoji-opt').forEach(opt => {
+      opt.addEventListener('click', () => {
+        chosen = opt.dataset.emoji;
+        overlay.querySelectorAll('.emoji-opt').forEach(o => o.classList.toggle('active', o === opt));
+      });
+    });
+    overlay.querySelector('#cat-pop-cancel').addEventListener('click', close);
+    overlay.querySelector('#cat-pop-ok').addEventListener('click', () => {
+      const label = (overlay.querySelector('#cat-pop-name').value || '').trim();
+      if (!label) { UI.toast('⚠️ 请输入类别名称'); return; }
+      const cat = Store.addCustomTodoCategory(label, chosen);
+      close();
+      if (!cat) {
+        UI.toast('⚠️ 该类别已存在或与固定类别重名');
+        selectEl.value = selectEl.dataset.prev || '';
+        return;
+      }
+      const labels = Store.getAllTodoCategoryLabels();
+      let html = '<option value="">请选择</option>' +
+        labels.map(o => `<option value="${this.esc(o)}" ${o === cat.label ? 'selected' : ''}>${this.esc(o)}</option>`).join('');
+      html += '<option value="__add_todo_cat__">➕ 新增类别...</option>';
+      selectEl.innerHTML = html;
+      UI.toast(`✅ 已添加类别「${cat.label}」`);
+    });
+    overlay.querySelector('#cat-pop-name').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') overlay.querySelector('#cat-pop-ok').click();
+    });
   },
 
   // ---------- 收集表单数据 ----------
