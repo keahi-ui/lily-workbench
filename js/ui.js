@@ -98,10 +98,16 @@ const UI = {
           const assetNames = assets.map(a => a.name);
           selectOpts = [...new Set([...assetNames, '银行卡', '微信', '支付宝', '现金', '花呗', '抖音月付', '其他'])];
         }
-        const opts = selectOpts.map(o =>
+        let opts = selectOpts.map(o =>
           `<option value="${this.esc(o)}" ${v === o ? 'selected' : ''}>${this.esc(o)}</option>`
         ).join('');
-        return `<select class="form-select" data-field="${name}"><option value="">请选择</option>${opts}</select>`;
+        // Todo 的「所属类别」下拉：追加「➕ 新增类别...」入口，选中即弹出新增
+        let extraAttr = '';
+        if (dbName === 'todo_list' && field.name === 'domain') {
+          opts += `<option value="__add_todo_cat__">➕ 新增类别...</option>`;
+          extraAttr = ' onchange="UI.onTodoDomainSelect(this)"';
+        }
+        return `<select class="form-select" data-field="${name}"${extraAttr}><option value="">请选择</option>${opts}</select>`;
 
       case 'multiselect':
         const selected = Array.isArray(v) ? v : [];
@@ -123,6 +129,36 @@ const UI = {
       default:
         return `<input type="text" class="form-input" data-field="${name}" value="${this.esc(v)}">`;
     }
+  },
+
+  // ---------- Todo 所属类别：下拉内新增类别 ----------
+  // 在下拉框末尾提供「➕ 新增类别...」选项，选中后用浏览器输入框取得新类别名，
+  // 即时写入 Store 并刷新当前下拉（不关闭待办表单弹窗）。
+  onTodoDomainSelect(selectEl) {
+    const val = selectEl.value;
+    if (val !== '__add_todo_cat__') {
+      // 正常选择，记录上一次有效值以便取消时回退
+      selectEl.dataset.prev = val;
+      return;
+    }
+    const name = window.prompt('输入新的 Todo 类别名称（例如：副业、健身、旅行…）');
+    if (!name || !name.trim()) {
+      selectEl.value = selectEl.dataset.prev || '';
+      return;
+    }
+    const cat = Store.addCustomTodoCategory(name.trim());
+    if (!cat) {
+      this.toast('⚠️ 该类别已存在或与固定类别重名');
+      selectEl.value = selectEl.dataset.prev || '';
+      return;
+    }
+    // 刷新下拉选项，并把新类别设为选中
+    const labels = Store.getAllTodoCategoryLabels();
+    let html = '<option value="">请选择</option>' +
+      labels.map(o => `<option value="${this.esc(o)}" ${o === cat.label ? 'selected' : ''}>${this.esc(o)}</option>`).join('');
+    html += '<option value="__add_todo_cat__">➕ 新增类别...</option>';
+    selectEl.innerHTML = html;
+    this.toast(`✅ 已添加类别「${cat.label}」`);
   },
 
   // ---------- 收集表单数据 ----------
