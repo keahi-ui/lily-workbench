@@ -595,7 +595,7 @@ const Store = {
     }
   },
 
-  // 推送一张表到云端（逐条 upsert，避免整表清空导致跨设备互相覆盖）
+  // 推送一张表到云端（批量 upsert，避免逐条请求造成的多次网络往返）
   async _syncPushTable(dbName) {
     if (!this._cloudReady()) return;
     try {
@@ -611,8 +611,18 @@ const Store = {
         }
         data = Object.values(deduped);
       }
-      for (const r of data) {
-        await this._syncPushRecord(dbName, r);
+      if (data.length === 0) return;
+      // 批量提交：一张表一次性 upsert（分批避免单次负载过大），大幅减少网络往返
+      const CHUNK = 200;
+      const isDate = this._isDateKeyed(dbName);
+      for (let i = 0; i < data.length; i += CHUNK) {
+        const batch = data.slice(i, i + CHUNK).map(r => ({
+          table_name: dbName,
+          record_id: isDate ? (r.date || r.id) : r.id,
+          data: r,
+          updated_at: r.updatedAt || new Date().toISOString()
+        }));
+        await supabaseClient.from('records').upsert(batch, { onConflict: 'table_name,record_id' });
       }
     } catch (e) {
       console.log('Cloud push failed:', e.message);
