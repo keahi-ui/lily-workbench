@@ -55,6 +55,7 @@ const App = {
 
     // 页面关闭/切后台时强制推送数据到云端
     window.addEventListener('beforeunload', () => Store._syncAllTablesNow());
+    window.addEventListener('pagehide', () => Store._syncAllTablesNow());
     window.addEventListener('visibilitychange', () => {
       if (document.hidden) Store._syncAllTablesNow();
     });
@@ -86,12 +87,22 @@ const App = {
     setInterval(() => this.checkReminders(), 60000);
   },
 
+  // ---------- 手动同步（云端互相同步） ----------
+  syncNow() {
+    if (typeof Store === 'undefined' || !Store._cloudReady || !Store._cloudReady()) {
+      UI.toast('⚠️ 未连接云端，请检查网络或刷新页面');
+      return;
+    }
+    Store.syncNow();
+  },
+
   // ---------- 渲染侧边栏 ----------
   renderSidebar() {
     const sidebar = document.getElementById('sidebar');
     let html = `<div class="sidebar-header">
       <h1>🌟 lilyの工作台</h1>
       <div class="subtitle">Personal Dashboard</div>
+      <button class="sync-btn" onclick="App.syncNow()" title="立即同步到云端 / 从云端拉取">🔄 同步</button>
     </div>`;
 
     // 构建动态导航（运动与护理节点合并自定义类别）

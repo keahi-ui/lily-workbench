@@ -430,7 +430,7 @@ const Store = {
     record.createdAt = new Date().toISOString();
     record.updatedAt = record.createdAt;
     data.push(record);
-    this._save(dbName, data);
+    this._save(dbName, data, record.id);
     return record;
   },
 
@@ -439,14 +439,14 @@ const Store = {
     const idx = data.findIndex(r => r.id === id);
     if (idx === -1) return null;
     data[idx] = { ...data[idx], ...updates, updatedAt: new Date().toISOString() };
-    this._save(dbName, data);
+    this._save(dbName, data, id);
     return data[idx];
   },
 
   delete(dbName, id) {
     const data = this.getAll(dbName);
     const filtered = data.filter(r => r.id !== id);
-    this._save(dbName, filtered);
+    this._save(dbName, filtered, id, 'delete');
     return filtered.length < data.length;
   },
 
@@ -454,9 +454,9 @@ const Store = {
     return this.getAll(dbName).filter(filterFn);
   },
 
-  _save(dbName, data) {
+  _save(dbName, data, changedId, op) {
     localStorage.setItem(this.prefix + dbName, JSON.stringify(data));
-    this._schedulePush(dbName);
+    this._schedulePush(dbName, changedId, op);
   },
 
   // ---------- Supabase 云同步 ----------
@@ -566,12 +566,11 @@ const Store = {
     }
   },
 
-  // 推送一张表到云端
+  // 推送一张表到云端（逐条 upsert，避免整表清空导致跨设备互相覆盖）
   async _syncPushTable(dbName) {
     if (!this._cloudReady()) return;
     try {
       let data = this.getAll(dbName);
-
       // date 为键的表：按 date 去重，只保留 updatedAt 最新的那条
       if (this._isDateKeyed(dbName)) {
         const deduped = {};
@@ -583,22 +582,36 @@ const Store = {
         }
         data = Object.values(deduped);
       }
-
-      // 先清空再全量插入
-      await supabaseClient.from('records').delete().eq('table_name', dbName);
-      if (data.length > 0) {
-        const rows = data.map(r => ({
-          table_name: dbName,
-          record_id: r.id,
-          data: r,
-          updated_at: r.updatedAt || new Date().toISOString()
-        }));
-        for (let i = 0; i < rows.length; i += 500) {
-          await supabaseClient.from('records').insert(rows.slice(i, i + 500));
-        }
+      for (const r of data) {
+        await this._syncPushRecord(dbName, r);
       }
     } catch (e) {
       console.log('Cloud push failed:', e.message);
+    }
+  },
+
+  // 推送单条记录（按 table_name + record_id upsert，主键冲突即更新）
+  async _syncPushRecord(dbName, record) {
+    if (!this._cloudReady() || !record) return;
+    try {
+      await supabaseClient.from('records').upsert({
+        table_name: dbName,
+        record_id: record.id,
+        data: record,
+        updated_at: record.updatedAt || new Date().toISOString()
+      }, { onConflict: 'table_name,record_id' });
+    } catch (e) {
+      console.log('Cloud push record failed:', e.message);
+    }
+  },
+
+  // 删除云端单条记录（本地删除后同步）
+  async _syncDeleteRecord(dbName, recordId) {
+    if (!this._cloudReady() || !recordId) return;
+    try {
+      await supabaseClient.from('records').delete().eq('table_name', dbName).eq('record_id', recordId);
+    } catch (e) {
+      console.log('Cloud delete record failed:', e.message);
     }
   },
 
@@ -614,29 +627,33 @@ const Store = {
     } catch (e) {}
   },
 
-  // 防抖推送：写操作后 2 秒自动同步
-  _schedulePush(dbName) {
+  // 防抖推送：写操作后 2 秒自动同步（只推变化的那条，互不覆盖）
+  _schedulePush(dbName, recordId, op) {
     if (!this._pushTimers) this._pushTimers = {};
-    clearTimeout(this._pushTimers[dbName]);
-    this._pushTimers[dbName] = setTimeout(() => {
-      this._syncPushTable(dbName);
+    const key = dbName + '::' + (recordId || '*');
+    clearTimeout(this._pushTimers[key]);
+    this._pushTimers[key] = setTimeout(async () => {
+      if (op === 'delete' && recordId) {
+        await this._syncDeleteRecord(dbName, recordId);
+      } else if (recordId) {
+        const rec = this.getById(dbName, recordId);
+        if (rec) await this._syncPushRecord(dbName, rec);
+      } else {
+        await this._syncPushTable(dbName);
+      }
     }, 2000);
   },
 
-  // 页面关闭/切后台时立即同步所有表
+  // 页面关闭/切后台时立即同步（推送待处理的表，逐条 upsert）
   _syncAllTablesNow() {
     if (!this._cloudReady()) return;
-    // 用 sendBeacon 或同步方式推送
     const pending = Object.keys(this._pushTimers || {});
-    for (const dbName of pending) {
-      clearTimeout(this._pushTimers[dbName]);
-      this._syncPushTable(dbName);
+    for (const key of pending) {
+      clearTimeout(this._pushTimers[key]);
     }
-    // 也尝试推送其他有未保存数据的表
+    // 推送所有表（逐条 upsert，不会清空他人数据）
     for (const dbName of Object.keys(this.schemas)) {
-      if (!pending.includes(dbName)) {
-        this._syncPushTable(dbName);
-      }
+      this._syncPushTable(dbName);
     }
   },
 
@@ -655,6 +672,19 @@ const Store = {
     if (artists) await this._syncPushSetting(this._starArtistsKey, JSON.parse(artists));
     const pwd = localStorage.getItem('wb_password_hash');
     if (pwd) await this._syncPushSetting('wb_password_hash', pwd);
+  },
+
+  // 手动同步：先拉取云端（云端优先，避免用本地旧版本覆盖云端新版本），再推送本地独有记录
+  async syncNow() {
+    if (!this._cloudReady()) { if (typeof UI !== 'undefined') UI.toast('⚠️ 未连接云端，请检查网络'); return false; }
+    if (typeof UI !== 'undefined') UI.toast('🔄 正在同步…');
+    // 1) 先拉取云端最新并合并到本地（云端较新的记录优先）
+    const pulled = await this._syncPullAll();
+    // 2) 再把合并后的结果（含本地独有记录）推送到云端，保证两端一致
+    if (pulled) await this._pushAll();
+    if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
+    if (typeof UI !== 'undefined') UI.toast('✅ 同步完成');
+    return true;
   },
 
   // ---------- 工具方法 ----------
@@ -1188,6 +1218,9 @@ const Store = {
         const pulled = await this._syncPullAll();
         if (!pulled && isFirstInit) {
           // 首次且云端无数据，把种子数据推上去
+          await this._pushAll();
+        } else if (pulled) {
+          // 拉取成功后，把本地独有记录（如离线新增）也上传云端
           await this._pushAll();
         }
         // 同步完成后刷新界面，确保仪表盘显示的是云端合并结果
