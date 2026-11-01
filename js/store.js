@@ -536,15 +536,16 @@ const Store = {
   },
 
   // 从云端拉取数据并合并到本地（云端最新版本优先）
+  // 返回结构化结果：{ ok, pulled, error }，便于上层判断同步是否真的成功
   async _syncPullAll() {
-    if (!this._cloudReady()) return false;
+    if (!this._cloudReady()) return { ok: false, pulled: 0, error: 'cloud_not_ready' };
     try {
       const { data: rows, error } = await supabaseClient
         .from('records')
         .select('*')
         .order('updated_at', { ascending: false });
-      if (error || !rows) return false;
-      if (rows.length === 0) return false;
+      if (error || !rows) return { ok: false, pulled: 0, error: error ? error.message : 'no_rows' };
+      if (rows.length === 0) return { ok: true, pulled: 0 };
 
       // 按表名分组
       const grouped = {};
@@ -587,10 +588,10 @@ const Store = {
         }
       }
 
-      return true;
+      return { ok: true, pulled: rows.length };
     } catch (e) {
       console.log('Cloud pull skipped:', e.message);
-      return false;
+      return { ok: false, pulled: 0, error: e.message };
     }
   },
 
@@ -692,21 +693,48 @@ const Store = {
     }
   },
 
-  // 全量推送（首次初始化后调用）
+  // 全量推送（首次初始化后调用），返回本次推送的记录条数
   async _pushAll() {
-    if (!this._cloudReady()) return;
+    if (!this._cloudReady()) return 0;
+    let count = 0;
     for (const dbName of Object.keys(this.schemas)) {
+      const data = this.getAll(dbName);
+      let toPush = data;
+      // date 为键的表：按 date 去重，只保留 updatedAt 最新的那条
+      if (this._isDateKeyed(dbName)) {
+        const deduped = {};
+        for (const r of data) {
+          if (!r.date) continue;
+          if (!deduped[r.date] || new Date(r.updatedAt) > new Date(deduped[r.date].updatedAt)) {
+            deduped[r.date] = r;
+          }
+        }
+        toPush = Object.values(deduped);
+      }
+      count += toPush.length;
       await this._syncPushTable(dbName);
     }
     // 同步自定义设置
-    const cats = localStorage.getItem(this._exerciseCustomKey);
-    if (cats) await this._syncPushSetting(this._exerciseCustomKey, JSON.parse(cats));
-    const todoCats = localStorage.getItem(this._todoCustomKey);
-    if (todoCats) await this._syncPushSetting(this._todoCustomKey, JSON.parse(todoCats));
-    const artists = localStorage.getItem(this._starArtistsKey);
-    if (artists) await this._syncPushSetting(this._starArtistsKey, JSON.parse(artists));
-    const pwd = localStorage.getItem('wb_password_hash');
-    if (pwd) await this._syncPushSetting('wb_password_hash', pwd);
+    const extra = [this._exerciseCustomKey, this._todoCustomKey, this._starArtistsKey, 'wb_password_hash'];
+    for (const key of extra) {
+      const v = localStorage.getItem(key);
+      if (v) { await this._syncPushSetting(key, JSON.parse(v)); count++; }
+    }
+    return count;
+  },
+
+  // 记录上次同步结果（供侧边栏状态条显示）
+  _setLastSync(result) {
+    try {
+      const data = {
+        ts: new Date().toISOString(),
+        ok: !!result.ok,
+        pulled: result.pulled || 0,
+        pushed: result.pushed || 0,
+        error: result.error || null,
+      };
+      localStorage.setItem('wb_last_sync', JSON.stringify(data));
+    } catch (e) {}
   },
 
   // 清理云端 date-keyed 表中历史遗留的重复行（旧版本用随机 id 推同一天会产生多行）。
@@ -752,18 +780,52 @@ const Store = {
   },
 
   // 手动同步：先拉取云端（云端优先，避免用本地旧版本覆盖云端新版本），再推送本地独有记录
+  // 返回值（结构化，便于 UI 给出"成功/失败"标识）：
+  //   { ok: boolean, pulled: number, pushed: number, message: string, error?: string }
   async syncNow() {
-    if (!this._cloudReady()) { if (typeof UI !== 'undefined') UI.toast('⚠️ 未连接云端，请检查网络'); return false; }
+    if (!this._cloudReady()) {
+      const fail = { ok: false, pulled: 0, pushed: 0, message: '未连接云端，请检查网络或刷新页面', error: 'cloud_not_ready' };
+      if (typeof UI !== 'undefined') UI.toast('⚠️ ' + fail.message);
+      this._setLastSync(fail);
+      if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
+      return fail;
+    }
     if (typeof UI !== 'undefined') UI.toast('🔄 正在同步…');
+
     // 1) 先拉取云端最新并合并到本地（字段级合并，任一台勾过都保留）
-    const pulled = await this._syncPullAll();
+    const pull = await this._syncPullAll();
+    if (!pull.ok) {
+      const msg = '❌ 拉取云端失败：' + (pull.error || '未知错误');
+      const fail = { ok: false, pulled: 0, pushed: 0, message: msg, error: pull.error };
+      if (typeof UI !== 'undefined') UI.toast(msg);
+      this._setLastSync(fail);
+      if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
+      return fail;
+    }
+
     // 2) 清理云端历史重复行（同一天多行），折叠为按日期唯一
-    await this._cleanupDateKeyedCloud();
+    try {
+      await this._cleanupDateKeyedCloud();
+    } catch (e) {
+      console.log('Cloud cleanup skipped:', e.message);
+    }
+
     // 3) 再把合并后的结果（含本地独有记录）推送到云端，保证两端一致
-    if (pulled) await this._pushAll();
+    let pushed = 0;
+    try {
+      pushed = await this._pushAll();
+    } catch (e) {
+      console.log('Cloud push skipped:', e.message);
+    }
+
+    // 4) 刷新界面
     if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
-    if (typeof UI !== 'undefined') UI.toast('✅ 同步完成');
-    return true;
+
+    const msg = `✅ 同步成功（拉取 ${pull.pulled} 条 · 推送 ${pushed} 条）`;
+    const ok = { ok: true, pulled: pull.pulled, pushed, message: msg };
+    if (typeof UI !== 'undefined') UI.toast(msg);
+    this._setLastSync(ok);
+    return ok;
   },
 
   // ---------- 工具方法 ----------

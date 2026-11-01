@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lily-workbench-v35';
+const CACHE_NAME = 'lily-workbench-v36';
 const ASSETS = [
   './',
   './index.html',

@@ -93,7 +93,38 @@ const App = {
       UI.toast('⚠️ 未连接云端，请检查网络或刷新页面');
       return;
     }
-    Store.syncNow();
+    // 按钮进入「同步中」状态，避免重复点击
+    const btn = document.getElementById('sync-btn');
+    if (btn) { btn.classList.add('syncing'); btn.disabled = true; btn.textContent = '🔄 同步中…'; }
+    Store.syncNow().then(result => {
+      console.log('[同步结果]', result);
+      // 同步完成后 rerender 已重建侧边栏（含状态条），此处仅恢复按钮
+      if (btn) { btn.classList.remove('syncing'); btn.disabled = false; btn.textContent = '🔄 同步'; }
+    }).catch(err => {
+      if (btn) { btn.classList.remove('syncing'); btn.disabled = false; btn.textContent = '🔄 同步'; }
+      UI.toast('❌ 同步异常：' + (err && err.message ? err.message : err));
+    });
+  },
+
+  // 渲染侧边栏「上次同步」状态条
+  _syncStatusHTML() {
+    try {
+      const raw = localStorage.getItem('wb_last_sync');
+      if (!raw) return '<div class="sync-status muted">上次同步：尚未同步</div>';
+      const s = JSON.parse(raw);
+      const t = new Date(s.ts);
+      const hh = String(t.getHours()).padStart(2, '0');
+      const mm = String(t.getMinutes()).padStart(2, '0');
+      const detail = `拉取 ${s.pulled} 条 · 推送 ${s.pushed} 条`;
+      if (s.ok) {
+        return `<div class="sync-status ok" title="${UI && UI.esc ? UI.esc(detail) : detail}">✅ ${hh}:${mm} 已同步</div>`;
+      }
+      const errText = s.error === 'cloud_not_ready' ? '未连接云端' : '失败';
+      const errDetail = s.error ? (UI && UI.esc ? UI.esc(String(s.error)) : String(s.error)) : '';
+      return `<div class="sync-status fail" title="${errDetail}">⚠️ ${hh}:${mm} 同步${errText}</div>`;
+    } catch (e) {
+      return '<div class="sync-status muted">上次同步：—</div>';
+    }
   },
 
   // ---------- 渲染侧边栏 ----------
@@ -102,7 +133,8 @@ const App = {
     let html = `<div class="sidebar-header">
       <h1>🌟 lilyの工作台</h1>
       <div class="subtitle">Personal Dashboard</div>
-      <button class="sync-btn" onclick="App.syncNow()" title="立即同步到云端 / 从云端拉取">🔄 同步</button>
+      <button class="sync-btn" id="sync-btn" onclick="App.syncNow()" title="立即同步到云端 / 从云端拉取">🔄 同步</button>
+      ${this._syncStatusHTML()}
     </div>`;
 
     // 构建动态导航（运动与护理节点合并自定义类别）
