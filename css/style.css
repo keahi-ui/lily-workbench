@@ -1012,6 +1012,13 @@ a:hover { text-decoration: underline; }
   animation: toastIn 0.3s ease;
 }
 
+/* 同步专用气泡：原地更新、薄荷绿描边强调 */
+.toast-sync {
+  border: 1.5px solid var(--mint-primary);
+  font-weight: 600;
+  max-width: 90vw;
+}
+
 @keyframes toastIn {
   from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: translateY(0); }

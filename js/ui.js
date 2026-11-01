@@ -819,6 +819,27 @@ const UI = {
     }, 2500);
   },
 
+  // 同步专用：复用同一条气泡，原地更新「正在同步 → 成功/失败原因」，避免堆叠
+  syncToast(message) {
+    let el = document.getElementById('sync-toast');
+    if (!el) {
+      const container = document.getElementById('toast-container');
+      if (!container) return;
+      el = document.createElement('div');
+      el.id = 'sync-toast';
+      el.className = 'toast toast-sync';
+      container.appendChild(el);
+    }
+    el.textContent = message;
+    el.style.opacity = '1';
+    if (el._timer) clearTimeout(el._timer);
+    el._timer = setTimeout(() => {
+      el.style.opacity = '0';
+      el.style.transition = 'opacity 0.3s';
+      setTimeout(() => { if (el.parentNode) el.remove(); }, 300);
+    }, 3500);
+  },
+
   // ---------- 空状态 ----------
   emptyState(emoji, message) {
     return `<div class="empty-state"><div class="emoji">${emoji}</div><p>${this.esc(message)}</p></div>`;

@@ -89,8 +89,8 @@ const App = {
 
   // ---------- 手动同步（云端互相同步） ----------
   syncNow() {
-    if (typeof Store === 'undefined' || !Store._cloudReady || !Store._cloudReady()) {
-      UI.toast('⚠️ 未连接云端，请检查网络或刷新页面');
+    if (typeof Store === 'undefined') {
+      UI.toast('⚠️ 数据层未加载');
       return;
     }
     // 按钮进入「同步中」状态，避免重复点击
@@ -98,8 +98,11 @@ const App = {
     if (btn) { btn.classList.add('syncing'); btn.disabled = true; btn.textContent = '🔄 同步中…'; }
     Store.syncNow().then(result => {
       console.log('[同步结果]', result);
-      // 同步完成后 rerender 已重建侧边栏（含状态条），此处仅恢复按钮
+      // 同步完成（成功或失败）后 rerender 已重建侧边栏（含状态条），此处仅恢复按钮
       if (btn) { btn.classList.remove('syncing'); btn.disabled = false; btn.textContent = '🔄 同步'; }
+      if (result && !result.ok && typeof UI !== 'undefined' && UI.syncToast) {
+        // 失败原因已在同步气泡中展示，这里确保状态条也已刷新
+      }
     }).catch(err => {
       if (btn) { btn.classList.remove('syncing'); btn.disabled = false; btn.textContent = '🔄 同步'; }
       UI.toast('❌ 同步异常：' + (err && err.message ? err.message : err));

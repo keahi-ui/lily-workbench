@@ -779,25 +779,51 @@ const Store = {
     }
   },
 
+  // 为 promise 增加超时保护，避免云端无响应时界面无限「正在同步」
+  _withTimeout(promise, ms, label) {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error('timeout:' + label)), ms);
+      Promise.resolve(promise).then(
+        v => { clearTimeout(t); resolve(v); },
+        e => { clearTimeout(t); reject(e); }
+      );
+    });
+  },
+
   // 手动同步：先拉取云端（云端优先，避免用本地旧版本覆盖云端新版本），再推送本地独有记录
   // 返回值（结构化，便于 UI 给出"成功/失败"标识）：
   //   { ok: boolean, pulled: number, pushed: number, message: string, error?: string }
   async syncNow() {
-    if (!this._cloudReady()) {
-      const fail = { ok: false, pulled: 0, pushed: 0, message: '未连接云端，请检查网络或刷新页面', error: 'cloud_not_ready' };
-      if (typeof UI !== 'undefined') UI.toast('⚠️ ' + fail.message);
+    const showToast = (m) => {
+      if (typeof UI !== 'undefined' && UI.syncToast) UI.syncToast(m);
+      else if (typeof UI !== 'undefined') UI.toast(m);
+    };
+
+    // 诊断：Supabase 脚本是否加载成功（被网络拦截会导致 supabaseClient 为 null）
+    if (typeof supabaseClient === 'undefined' || supabaseClient === null) {
+      const reason = (typeof window !== 'undefined' && typeof window.supabase === 'undefined')
+        ? 'Supabase 脚本未加载（可能网络拦截了 cdn.jsdelivr.net）'
+        : '云端客户端未初始化';
+      const fail = { ok: false, pulled: 0, pushed: 0, message: '⚠️ ' + reason, error: 'cloud_not_ready' };
+      showToast(fail.message);
       this._setLastSync(fail);
       if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
       return fail;
     }
-    if (typeof UI !== 'undefined') UI.toast('🔄 正在同步…');
+
+    showToast('🔄 正在同步…');
 
     // 1) 先拉取云端最新并合并到本地（字段级合并，任一台勾过都保留）
-    const pull = await this._syncPullAll();
+    let pull;
+    try {
+      pull = await this._withTimeout(this._syncPullAll(), 20000, 'pull');
+    } catch (e) {
+      pull = { ok: false, pulled: 0, error: '请求超时：云端无响应（请检查网络/防火墙是否能访问 supabase.co）' };
+    }
     if (!pull.ok) {
       const msg = '❌ 拉取云端失败：' + (pull.error || '未知错误');
       const fail = { ok: false, pulled: 0, pushed: 0, message: msg, error: pull.error };
-      if (typeof UI !== 'undefined') UI.toast(msg);
+      showToast(msg);
       this._setLastSync(fail);
       if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
       return fail;
@@ -805,7 +831,7 @@ const Store = {
 
     // 2) 清理云端历史重复行（同一天多行），折叠为按日期唯一
     try {
-      await this._cleanupDateKeyedCloud();
+      await this._withTimeout(this._cleanupDateKeyedCloud(), 20000, 'cleanup');
     } catch (e) {
       console.log('Cloud cleanup skipped:', e.message);
     }
@@ -813,7 +839,7 @@ const Store = {
     // 3) 再把合并后的结果（含本地独有记录）推送到云端，保证两端一致
     let pushed = 0;
     try {
-      pushed = await this._pushAll();
+      pushed = await this._withTimeout(this._pushAll(), 30000, 'push');
     } catch (e) {
       console.log('Cloud push skipped:', e.message);
     }
@@ -823,7 +849,7 @@ const Store = {
 
     const msg = `✅ 同步成功（拉取 ${pull.pulled} 条 · 推送 ${pushed} 条）`;
     const ok = { ok: true, pulled: pull.pulled, pushed, message: msg };
-    if (typeof UI !== 'undefined') UI.toast(msg);
+    showToast(msg);
     this._setLastSync(ok);
     return ok;
   },
@@ -1356,18 +1382,24 @@ const Store = {
     // 云端同步：每次打开都从云端拉取最新数据
     if (this._cloudReady()) {
       setTimeout(async () => {
-        const pulled = await this._syncPullAll();
+        let pulled;
+        try {
+          pulled = await this._withTimeout(this._syncPullAll(), 20000, 'init-pull');
+        } catch (e) {
+          console.log('Cloud init pull skipped:', e.message);
+          pulled = false;
+        }
         if (!pulled && isFirstInit) {
           // 首次且云端无数据，把种子数据推上去
-          await this._pushAll();
+          try { await this._withTimeout(this._pushAll(), 30000, 'init-push'); } catch (e) { console.log('init push skipped', e.message); }
         } else if (pulled) {
           // 拉取成功后，清理云端历史重复行（同一天多行），并上传本地独有记录
           const todayKey = this.todayStr();
           if (localStorage.getItem(this.prefix + 'cloud_cleanup_date') !== todayKey) {
-            await this._cleanupDateKeyedCloud();
+            try { await this._withTimeout(this._cleanupDateKeyedCloud(), 20000, 'init-cleanup'); } catch (e) { console.log('init cleanup skipped', e.message); }
             localStorage.setItem(this.prefix + 'cloud_cleanup_date', todayKey);
           }
-          await this._pushAll();
+          try { await this._withTimeout(this._pushAll(), 30000, 'init-push'); } catch (e) { console.log('init push skipped', e.message); }
         }
         // 同步完成后刷新界面，确保仪表盘显示的是云端合并结果
         // （防止渲染时用空白记录，之后才等到云端数据）
