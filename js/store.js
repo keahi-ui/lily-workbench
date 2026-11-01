@@ -445,8 +445,10 @@ const Store = {
 
   delete(dbName, id) {
     const data = this.getAll(dbName);
+    const target = data.find(r => r.id === id);
+    const date = target ? target.date : undefined;
     const filtered = data.filter(r => r.id !== id);
-    this._save(dbName, filtered, id, 'delete');
+    this._save(dbName, filtered, id, 'delete', date);
     return filtered.length < data.length;
   },
 
@@ -454,9 +456,9 @@ const Store = {
     return this.getAll(dbName).filter(filterFn);
   },
 
-  _save(dbName, data, changedId, op) {
+  _save(dbName, data, changedId, op, date) {
     localStorage.setItem(this.prefix + dbName, JSON.stringify(data));
-    this._schedulePush(dbName, changedId, op);
+    this._schedulePush(dbName, changedId, op, date);
   },
 
   // ---------- Supabase 云同步 ----------
@@ -492,6 +494,47 @@ const Store = {
     return false;
   },
 
+  // 字段级合并：多条记录合成一条。布尔值取「或」（任一处勾过即保留），
+  // 其余字段取 updatedAt 较新者（平局时取非空），避免任一台设备的数据被整体覆盖。
+  _mergeRecordsData(records) {
+    const arr = (records || []).filter(Boolean);
+    if (arr.length === 0) return null;
+    let base = { ...arr[0] };
+    for (let i = 1; i < arr.length; i++) {
+      const r = arr[i];
+      const keys = new Set([...Object.keys(base), ...Object.keys(r)]);
+      for (const k of keys) {
+        if (k === 'id' || k === 'createdAt' || k === 'updatedAt' || k === 'date') continue;
+        const bv = base[k], rv = r[k];
+        if (typeof bv === 'boolean' || typeof rv === 'boolean') {
+          base[k] = Boolean(bv) || Boolean(rv);
+        } else if (new Date(r.updatedAt || 0) > new Date(base.updatedAt || 0)) {
+          if (rv !== undefined && rv !== null && rv !== '') base[k] = rv;
+        } else if ((bv === undefined || bv === null || bv === '') &&
+                   (rv !== undefined && rv !== null && rv !== '')) {
+          base[k] = rv;
+        }
+      }
+      if (new Date(r.updatedAt || 0) > new Date(base.updatedAt || 0)) base.updatedAt = r.updatedAt;
+    }
+    return base;
+  },
+
+  // 把本地 + 云端记录按 date 分组，组内做字段级合并，返回去重后的数组
+  _mergeDateKeyed(localRecords, cloudRecords) {
+    const groups = {};
+    for (const r of [...(localRecords || []), ...(cloudRecords || [])]) {
+      if (!r || !r.date) continue;
+      (groups[r.date] = groups[r.date] || []).push(r);
+    }
+    const out = [];
+    for (const d of Object.keys(groups)) {
+      const m = this._mergeRecordsData(groups[d]);
+      if (m) out.push(m);
+    }
+    return out;
+  },
+
   // 从云端拉取数据并合并到本地（云端最新版本优先）
   async _syncPullAll() {
     if (!this._cloudReady()) return false;
@@ -517,26 +560,11 @@ const Store = {
         const localMap = {};
 
         if (dateKeyed) {
-          // date 为键的表：按 date 字段去重合并
-          // 规则：优先保留「有用户数据」的记录，其次 updatedAt 最新的
-          const allRecords = [...this.getAll(dbName), ...grouped[dbName]];
-          for (const r of allRecords) {
-            if (!r.date) continue;
-            const existing = localMap[r.date];
-            if (!existing) {
-              localMap[r.date] = r;
-            } else {
-              const rHasData = this._hasUserData(dbName, r);
-              const existingHasData = this._hasUserData(dbName, existing);
-              if (rHasData && !existingHasData) {
-                localMap[r.date] = r; // 有数据的覆盖空的
-              } else if (!rHasData && existingHasData) {
-                // 保持 existing（已有数据）
-              } else if (new Date(r.updatedAt) > new Date(existing.updatedAt)) {
-                localMap[r.date] = r; // 都有/都无数据时，取较新的
-              }
-            }
-          }
+          // date 为键的表：本地 + 云端按日期分组，组内做字段级合并
+          // （布尔值取「或」，文本取较新非空），避免任一台设备数据被整体覆盖
+          const merged = this._mergeDateKeyed(this.getAll(dbName), grouped[dbName]);
+          localStorage.setItem(this.prefix + dbName, JSON.stringify(merged));
+          continue;
         } else {
           // 普通表：按 id 合并
           for (const r of this.getAll(dbName)) localMap[r.id] = r;
@@ -591,12 +619,17 @@ const Store = {
   },
 
   // 推送单条记录（按 table_name + record_id upsert，主键冲突即更新）
+  // 关键：日期表（daily_checkin 等）用 date 作为 record_id，保证同一天只对应一条云端记录，
+  // 否则两端各自生成随机 id 会让同一天分裂成多条记录、合并时互相覆盖。
   async _syncPushRecord(dbName, record) {
     if (!this._cloudReady() || !record) return;
+    const isDate = this._isDateKeyed(dbName);
+    const rid = isDate ? (record.date || record.id) : record.id;
+    if (!rid) return;
     try {
       await supabaseClient.from('records').upsert({
         table_name: dbName,
-        record_id: record.id,
+        record_id: rid,
         data: record,
         updated_at: record.updatedAt || new Date().toISOString()
       }, { onConflict: 'table_name,record_id' });
@@ -606,10 +639,12 @@ const Store = {
   },
 
   // 删除云端单条记录（本地删除后同步）
-  async _syncDeleteRecord(dbName, recordId) {
-    if (!this._cloudReady() || !recordId) return;
+  // 日期表按 date 定位（云端主键是日期），普通表按 record.id
+  async _syncDeleteRecord(dbName, recordId, date) {
+    if (!this._cloudReady() || (!recordId && !date)) return;
     try {
-      await supabaseClient.from('records').delete().eq('table_name', dbName).eq('record_id', recordId);
+      const rid = this._isDateKeyed(dbName) ? (date || recordId) : recordId;
+      await supabaseClient.from('records').delete().eq('table_name', dbName).eq('record_id', rid);
     } catch (e) {
       console.log('Cloud delete record failed:', e.message);
     }
@@ -628,13 +663,13 @@ const Store = {
   },
 
   // 防抖推送：写操作后 2 秒自动同步（只推变化的那条，互不覆盖）
-  _schedulePush(dbName, recordId, op) {
+  _schedulePush(dbName, recordId, op, date) {
     if (!this._pushTimers) this._pushTimers = {};
     const key = dbName + '::' + (recordId || '*');
     clearTimeout(this._pushTimers[key]);
     this._pushTimers[key] = setTimeout(async () => {
       if (op === 'delete' && recordId) {
-        await this._syncDeleteRecord(dbName, recordId);
+        await this._syncDeleteRecord(dbName, recordId, date);
       } else if (recordId) {
         const rec = this.getById(dbName, recordId);
         if (rec) await this._syncPushRecord(dbName, rec);
@@ -674,13 +709,57 @@ const Store = {
     if (pwd) await this._syncPushSetting('wb_password_hash', pwd);
   },
 
+  // 清理云端 date-keyed 表中历史遗留的重复行（旧版本用随机 id 推同一天会产生多行）。
+  // 折叠为「按日期唯一」的一行：组内字段级合并后 upsert(record_id=date)，再删除其余重复行。
+  async _cleanupDateKeyedCloud() {
+    if (!this._cloudReady()) return;
+    const dateKeyed = Object.keys(this.schemas).filter(db => this._isDateKeyed(db));
+    for (const dbName of dateKeyed) {
+      try {
+        const { data: rows, error } = await supabaseClient
+          .from('records')
+          .select('*')
+          .eq('table_name', dbName);
+        if (error || !rows || rows.length === 0) continue;
+        const byDate = {};
+        for (const row of rows) {
+          const d = row.data && row.data.date;
+          if (!d) continue;
+          (byDate[d] = byDate[d] || []).push(row);
+        }
+        for (const d of Object.keys(byDate)) {
+          const group = byDate[d];
+          if (group.length < 2 && group[0] && group[0].record_id === d) continue; // 已规范，无需处理
+          const canonical = this._mergeRecordsData(group.map(r => r.data));
+          if (!canonical) continue;
+          canonical.date = d;
+          await supabaseClient.from('records').upsert({
+            table_name: dbName,
+            record_id: d,
+            data: canonical,
+            updated_at: canonical.updatedAt || new Date().toISOString()
+          }, { onConflict: 'table_name,record_id' });
+          for (const r of group) {
+            if (r.record_id !== d) {
+              await supabaseClient.from('records').delete().eq('table_name', dbName).eq('record_id', r.record_id);
+            }
+          }
+        }
+      } catch (e) {
+        console.log('Cloud cleanup skipped for', dbName, e.message);
+      }
+    }
+  },
+
   // 手动同步：先拉取云端（云端优先，避免用本地旧版本覆盖云端新版本），再推送本地独有记录
   async syncNow() {
     if (!this._cloudReady()) { if (typeof UI !== 'undefined') UI.toast('⚠️ 未连接云端，请检查网络'); return false; }
     if (typeof UI !== 'undefined') UI.toast('🔄 正在同步…');
-    // 1) 先拉取云端最新并合并到本地（云端较新的记录优先）
+    // 1) 先拉取云端最新并合并到本地（字段级合并，任一台勾过都保留）
     const pulled = await this._syncPullAll();
-    // 2) 再把合并后的结果（含本地独有记录）推送到云端，保证两端一致
+    // 2) 清理云端历史重复行（同一天多行），折叠为按日期唯一
+    await this._cleanupDateKeyedCloud();
+    // 3) 再把合并后的结果（含本地独有记录）推送到云端，保证两端一致
     if (pulled) await this._pushAll();
     if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
     if (typeof UI !== 'undefined') UI.toast('✅ 同步完成');
@@ -1220,7 +1299,12 @@ const Store = {
           // 首次且云端无数据，把种子数据推上去
           await this._pushAll();
         } else if (pulled) {
-          // 拉取成功后，把本地独有记录（如离线新增）也上传云端
+          // 拉取成功后，清理云端历史重复行（同一天多行），并上传本地独有记录
+          const todayKey = this.todayStr();
+          if (localStorage.getItem(this.prefix + 'cloud_cleanup_date') !== todayKey) {
+            await this._cleanupDateKeyedCloud();
+            localStorage.setItem(this.prefix + 'cloud_cleanup_date', todayKey);
+          }
           await this._pushAll();
         }
         // 同步完成后刷新界面，确保仪表盘显示的是云端合并结果
@@ -1242,24 +1326,20 @@ const Store = {
     for (const dbName of dateKeyedTables) {
       const all = this.getAll(dbName);
       const byDate = {};
-      let dup = 0;
       for (const r of all) {
         if (!r.date) { byDate[r.id || ('_' + Math.random())] = r; continue; }
-        if (byDate[r.date]) {
-          dup++;
-          // 保留有用户数据的；都无数据时保留 updatedAt 最新的
-          const cur = byDate[r.date];
-          const curHas = this._hasUserData(dbName, cur);
-          const rHas = this._hasUserData(dbName, r);
-          if (rHas && !curHas) byDate[r.date] = r;
-          else if (!rHas && curHas) { /* keep cur */ }
-          else if (new Date(r.updatedAt) > new Date(cur.updatedAt)) byDate[r.date] = r;
-        } else {
-          byDate[r.date] = r;
-        }
+        (byDate[r.date] = byDate[r.date] || []).push(r);
+      }
+      const merged = [];
+      let dup = 0;
+      for (const d of Object.keys(byDate)) {
+        const group = byDate[d];
+        if (group.length > 1) dup++;
+        const m = this._mergeRecordsData(group);
+        if (m) merged.push(m);
       }
       if (dup > 0) {
-        localStorage.setItem(this.prefix + dbName, JSON.stringify(Object.values(byDate)));
+        localStorage.setItem(this.prefix + dbName, JSON.stringify(merged));
         changed = true;
       }
     }
