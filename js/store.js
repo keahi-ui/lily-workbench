@@ -800,11 +800,14 @@ const Store = {
     });
   },
 
-  // 手动同步：先拉取云端（云端优先，避免用本地旧版本覆盖云端新版本），再推送本地独有记录
+  // 同步：先拉取云端（云端优先，避免用本地旧版本覆盖云端新版本），再推送本地独有记录
+  // opts.silent=true 时用于「后台自动同步」：不弹气泡、不强制重渲染（除非确有新数据且不干扰输入）、只静默更新状态条
   // 返回值（结构化，便于 UI 给出"成功/失败"标识）：
   //   { ok: boolean, pulled: number, pushed: number, message: string, error?: string }
-  async syncNow() {
+  async syncNow(opts = {}) {
+    const silent = opts.silent === true;
     const showToast = (m) => {
+      if (silent) return;
       if (typeof UI !== 'undefined' && UI.syncToast) UI.syncToast(m);
       else if (typeof UI !== 'undefined') UI.toast(m);
     };
@@ -815,13 +818,12 @@ const Store = {
         ? 'Supabase 脚本未加载（可能网络拦截了 cdn.jsdelivr.net）'
         : '云端客户端未初始化';
       const fail = { ok: false, pulled: 0, pushed: 0, message: '⚠️ ' + reason, error: 'cloud_not_ready' };
-      showToast(fail.message);
-      this._setLastSync(fail);
-      if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
+      // 后台模式：云端压根没就绪时静默跳过，不污染状态条（手动点才提示）
+      if (!silent) { showToast(fail.message); this._setLastSync(fail); this._refreshSyncBar(); }
       return fail;
     }
 
-    showToast('🔄 正在同步…');
+    if (!silent) showToast('🔄 正在同步…');
 
     // 1) 先拉取云端最新并合并到本地（字段级合并，任一台勾过都保留）
     let pull;
@@ -833,9 +835,8 @@ const Store = {
     if (!pull.ok) {
       const msg = '❌ 拉取云端失败：' + (pull.error || '未知错误');
       const fail = { ok: false, pulled: 0, pushed: 0, message: msg, error: pull.error };
-      showToast(msg);
-      this._setLastSync(fail);
-      if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
+      // 后台模式：静默跳过，不覆盖之前的好状态（手动点才提示失败）
+      if (!silent) { showToast(msg); this._setLastSync(fail); this._refreshSyncBar(); }
       return fail;
     }
 
@@ -854,14 +855,37 @@ const Store = {
       console.log('Cloud push skipped:', e.message);
     }
 
-    // 4) 刷新界面
-    if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
-
-    const msg = `✅ 同步成功（拉取 ${pull.pulled} 条 · 推送 ${pushed} 条）`;
-    const ok = { ok: true, pulled: pull.pulled, pushed, message: msg };
-    showToast(msg);
+    // 4) 成功：写入上次同步状态 + 静默刷新状态条
+    const ok = { ok: true, pulled: pull.pulled, pushed, message: `✅ 同步成功（拉取 ${pull.pulled} 条 · 推送 ${pushed} 条）` };
     this._setLastSync(ok);
+    this._refreshSyncBar();
+
+    // 5) 决定是否重渲染界面
+    if (silent) {
+      // 后台模式：仅当确有云端新数据、且用户没在输入框里打字、且没开着弹窗时，才刷新界面，避免打断操作
+      const ae = document.activeElement;
+      const focused = ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable);
+      const modalOpen = document.querySelector('.modal-overlay') || document.querySelector('.modal');
+      if (pull.pulled > 0 && !focused && !modalOpen && typeof App !== 'undefined' && typeof App.rerender === 'function') {
+        App.rerender();
+      }
+      // 后台静默成功不弹 toast
+    } else {
+      showToast(ok.message);
+      if (typeof App !== 'undefined' && typeof App.rerender === 'function') App.rerender();
+    }
+
     return ok;
+  },
+
+  // 仅更新侧边栏状态条（不重建整个页面），供后台静默同步使用
+  _refreshSyncBar() {
+    try {
+      const el = document.querySelector('.sync-status');
+      if (el && typeof App !== 'undefined' && typeof App._syncStatusHTML === 'function') {
+        el.outerHTML = App._syncStatusHTML();
+      }
+    } catch (e) {}
   },
 
   // ---------- 工具方法 ----------

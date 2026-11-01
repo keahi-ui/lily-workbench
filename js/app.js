@@ -89,10 +89,12 @@ const App = {
 
   // ---------- 手动同步（云端互相同步） ----------
   syncNow() {
+    if (this._syncing) return; // 防止与后台自动同步并发
     if (typeof Store === 'undefined') {
       UI.toast('⚠️ 数据层未加载');
       return;
     }
+    this._syncing = true;
     // 按钮进入「同步中」状态，避免重复点击
     const btn = document.getElementById('sync-btn');
     if (btn) { btn.classList.add('syncing'); btn.disabled = true; btn.textContent = '🔄 同步中…'; }
@@ -100,13 +102,26 @@ const App = {
       console.log('[同步结果]', result);
       // 同步完成（成功或失败）后 rerender 已重建侧边栏（含状态条），此处仅恢复按钮
       if (btn) { btn.classList.remove('syncing'); btn.disabled = false; btn.textContent = '🔄 同步'; }
-      if (result && !result.ok && typeof UI !== 'undefined' && UI.syncToast) {
-        // 失败原因已在同步气泡中展示，这里确保状态条也已刷新
-      }
     }).catch(err => {
       if (btn) { btn.classList.remove('syncing'); btn.disabled = false; btn.textContent = '🔄 同步'; }
       UI.toast('❌ 同步异常：' + (err && err.message ? err.message : err));
-    });
+    }).finally(() => { this._syncing = false; });
+  },
+
+  // ---------- 后台自动同步 ----------
+  // 页面处于前台且云端就绪时，每 intervalMs 静默拉取+推送一次，实现「平时不用点也能自动并数据」
+  startAutoSync(intervalMs = 60000) {
+    if (this._autoSyncTimer) return;
+    this._autoSyncTimer = setInterval(() => {
+      // 仅在前台、云端就绪、且当前没有同步进行时才跑；全部静默（不弹气泡）
+      if (document.visibilityState !== 'visible') return;
+      if (this._syncing) return;
+      if (typeof Store === 'undefined' || !Store._cloudReady || !Store._cloudReady()) return;
+      this._syncing = true;
+      Store.syncNow({ silent: true })
+        .catch(e => console.log('后台同步跳过:', e && e.message))
+        .finally(() => { this._syncing = false; });
+    }, intervalMs);
   },
 
   // 渲染侧边栏「上次同步」状态条
@@ -1353,4 +1368,6 @@ document.addEventListener('DOMContentLoaded', () => {
   App.init();
   // 延迟请求通知权限
   setTimeout(() => App.requestNotificationPermission(), 3000);
+  // 启动后台自动同步（每 60 秒静默拉取+推送，页面在前台且云端就绪时生效）
+  App.startAutoSync(60000);
 });
